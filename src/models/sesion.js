@@ -10,11 +10,11 @@ module.exports = (sequelize, DataTypes) => {
         as: 'pasajero'
       });
       
-      // cuando se crear el modelo del conductor:
-      // Sesion.belongsTo(models.Conductor, {
-      //   foreignKey: 'conductor_id',
-      //   as: 'conductor'
-      // });
+      // ✅ NUEVA RELACIÓN: una sesión pertenece a un conductor
+      Sesion.belongsTo(models.Conductor, {
+        foreignKey: 'conductor_id',
+        as: 'conductor'
+      });
     }
 
     // metodo para verificar si la sesiòn està activa y no ha expirado
@@ -26,6 +26,20 @@ module.exports = (sequelize, DataTypes) => {
     async desactivar() {
       this.activa = false;
       await this.save();
+    }
+
+    // ✅ NUEVO: Verificar tipo de usuario
+    esPasajero() {
+      return !!this.pasajero_id;
+    }
+
+    esConductor() {
+      return !!this.conductor_id;
+    }
+
+    // ✅ NUEVO: Obtener el usuario asociado
+    getUsuario() {
+      return this.pasajero || this.conductor;
     }
   }
 
@@ -46,8 +60,11 @@ module.exports = (sequelize, DataTypes) => {
     },
     conductor_id: {
       type: DataTypes.UUID,
-      allowNull: true
-      // Referencia futura
+      allowNull: true,
+      references: {
+        model: 'conductores',
+        key: 'id'
+      }
     },
     token: {
       type: DataTypes.TEXT,

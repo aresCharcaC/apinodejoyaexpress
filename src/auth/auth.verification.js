@@ -69,91 +69,108 @@ function isRedisAvailable() {
 class VerificationService {
   
  
-  async generateAndStoreCode(incomingMessage, telefono) {
-    try {
-      console.log('iniciando con el envio y guardado del codigo');
+ // src/auth/auth.verification.js - MEJORAR generateAndStoreCode
+
+async generateAndStoreCode(incomingMessage, telefono, forceWhatsApp = false) {
+  try {
+    console.log('📤 Iniciando generateAndStoreCode');
+    console.log(`📋 Parámetros: incomingMessage="${incomingMessage}", telefono="${telefono}", forceWhatsApp=${forceWhatsApp} `);
+    
+    // ✅ VALIDAR QUE TELEFONO NO SEA UNDEFINED
+    if (!telefono) {
+      throw new Error('Teléfono es requerido para generar código');
+    }
+    
+    // ✅ FORMATEAR Y VALIDAR TELÉFONO
+    const formattedPhone = smsService.formatPhoneNumber(telefono);
+    console.log("📱 Teléfono formateado:", formattedPhone);
+    
+    if (!smsService.validatePhoneFormat(formattedPhone)) {
+      throw new Error('Formato de teléfono inválido: ' + telefono);
+    }
+    
+    console.log(`✅ Teléfono válido: ${telefono} -> ${formattedPhone}`);
+    
+    // ✅ ENVIAR CÓDIGO
+    console.log('📤 Enviando código usando smsService...');
+    
+    // ✅ MANEJAR CASO DE FORGOT PASSWORD 
+    const smsResult = await smsService.sendVerificationCode(incomingMessage, formattedPhone, forceWhatsApp);
+    
+    if (!smsResult.success) {
+      throw new Error(smsResult.message || smsResult.error || 'Error enviando código SMS');
+    }
+    
+    console.log(`✅ SMS enviado correctamente`, {
+      provider: smsResult.provider,
+      messageID: smsResult.messageId || smsResult.messageSid,
+      code: smsResult.code
+    });
+    
+    // ✅ CONSTRUIR RESPUESTA
+    const response = {
+      message: smsResult.message || 'Código enviado exitosamente',
+      telefono: formattedPhone,
+      expiresIn: 300,
+      provider: smsResult.provider,
+      timestamp: smsResult.timestamp || new Date().toISOString()
+    };
+    
+    if (smsResult.messageSid) {
+      response.messageSid = smsResult.messageSid;
+    }
+    
+    if (process.env.NODE_ENV === 'development' && smsResult.code) {
+      response.testCode = smsResult.code;
+    }
+    
+    console.log(`✅ generateAndStoreCode completado para: ${formattedPhone}`);
+    return response;
+    
+  } catch (error) {
+    console.error('❌ Error generando código:', error.message);
+    console.error('❌ Stack:', error.stack);
+    
+    // ✅ FALLBACK PARA DESARROLLO
+    if (process.env.NODE_ENV === 'development') {
+      console.log("🔧 Iniciando fallback de desarrollo");
       
-      // formatear y validar el formato del telefono
-      const formattedPhone = smsService.formatPhoneNumber(telefono);
-      if(!smsService.validatePhoneFormat(formattedPhone)){
-        throw new Error('Formato de telefono inválido: ' + telefono);
+      const fallbackCode = '123456';
+      let formattedPhone;
+      
+      try {
+        // ✅ ASEGURAR QUE TELEFONO NO SEA UNDEFINED EN FALLBACK
+        formattedPhone = telefono ? smsService.formatPhoneNumber(telefono) : '+51000000000';
+      } catch (formatError) {
+        console.error('❌ Error en formato fallback:', formatError.message);
+        formattedPhone = '+51000000000';
       }
-      console.log(`Telefono formateado: ${telefono} -> ${formattedPhone}`);
-
-      console.log('Enviando el codigo usando smsService...');
       
-      // ✅ ESTE MÉTODO SE ENCARGA DE ENVIAR Y GUARDAR EN REDIS
-      const smsResult = await smsService.sendVerificationCode(incomingMessage, formattedPhone);
-
-      if(!smsResult.success){
-        throw new Error(smsResult.message || smsResult.error || 'Error enviando código SMS');
-      }
-
-      console.log(`SMS enviado correctamente`, {
-        provider: smsResult.provider,
-        messageID: smsResult.messageId || smsResult.messageSid,
-        code: smsResult.code // ✅ AHORA ESTÁ DISPONIBLE
-      });
-
-      // ✅ EL CÓDIGO YA ESTÁ GUARDADO EN REDIS POR smsService
-      // Solo verificamos que se guardó correctamente
-      if (isRedisAvailable() && smsResult.code) {
-        const redis = getRedisClient();
-        const verificationKey = `verification_code:${formattedPhone}`;
-        const storedCode = await redis.get(verificationKey);
-        console.log(`🔍 Verificación: Redis key ${verificationKey} = ${storedCode}`);
-      }
-
-      // ✅ CONSTRUIR RESPUESTA
-      const response = {
-        message: smsResult.message || 'Código enviado exitosamente',
-        telefono: formattedPhone,
-        expiresIn: 300,
-        provider: smsResult.provider,
-        timestamp: smsResult.timestamp || new Date().toISOString()
-      };
-      
-      if (smsResult.messageSid) {
-        response.messageSid = smsResult.messageSid;
-      }
-      
-      if (process.env.NODE_ENV === 'development' && smsResult.code) {
-        response.testCode = smsResult.code;
-      }
-
-      console.log(`✅ generateAndStoreCode completado con éxito para: ${formattedPhone}`);
-      return response;
-      
-    } catch (error) {
-      console.error('❌ Error generando código:', error.message);
-      
-      // ✅ FALLBACK PARA DESARROLLO
-      if(process.env.NODE_ENV === 'development'){
-        console.log("Iniciando fallback de desarrollo");
-        const fallbackCode = '123456';
-        const formattedPhone = smsService.formatPhoneNumber(telefono);
-        
-        if(isRedisAvailable()){
+      if (isRedisAvailable()) {
+        try {
           const redis = getRedisClient();
           const verificationKey = `verification_code:${formattedPhone}`;
           await redis.setEx(verificationKey, 300, fallbackCode);
           console.log(`💾 Fallback guardado en Redis: ${verificationKey} = ${fallbackCode}`);
+        } catch (redisError) {
+          console.error('❌ Error guardando fallback en Redis:', redisError.message);
         }
-        
-        return {
-          message: 'Código enviado exitosamente (modo desarrollo)',
-          telefono: formattedPhone,
-          expiresIn: 300,
-          provider: 'fallback-development',
-          timestamp: new Date().toISOString(),
-          testCode: fallbackCode,
-          status: 'development_fallback'
-        };
       }
-      throw error;
+      
+      return {
+        message: 'Código enviado exitosamente (modo desarrollo)',
+        telefono: formattedPhone,
+        expiresIn: 300,
+        provider: 'fallback-development',
+        timestamp: new Date().toISOString(),
+        testCode: fallbackCode,
+        status: 'development_fallback'
+      };
     }
+    
+    throw error;
   }
- 
+}
 
   async verifyCode(telefono, inputCode) {
     try {

@@ -1,4 +1,4 @@
-const { Usuario, Sesion } = require('../models');
+const { Usuario, Sesion,  } = require('../models');
 const { generateId } = require('./auth.util');
 const { NotFoundError, ConflictError } = require('../utils/errors');
 
@@ -44,7 +44,7 @@ class AuthRepository {
    */
   async updateUserPassword(userId, nuevaContrasena) {
     const user = await this.findUserById(userId);
-    user.password = nuevaContrasena; // Se hasheará automáticamente por el hook
+    user.password = nuevaContrasena;
     await user.save();
     return user.toPublicJSON();
   }
@@ -52,9 +52,35 @@ class AuthRepository {
   /**
    * Crear sesión en la base de datos
    */
-  async createSession(sessionData) {
-    return await Sesion.create(sessionData);
+
+async createSession(sessionData) {
+  try {
+    console.log('📝 Creando sesión con datos:', sessionData);
+    
+    // ✅ VALIDAR QUE TENGA PASAJERO_ID
+    if (!sessionData.pasajero_id) {
+      throw new Error('pasajero_id es requerido para crear sesión');
+    }
+    
+    // ✅ ASEGURAR QUE CONDUCTOR_ID SEA NULL
+    const cleanSessionData = {
+      ...sessionData,
+      conductor_id: null 
+    };
+    
+    console.log('📝 Datos de sesión limpios:', cleanSessionData);
+    
+    const session = await Sesion.create(cleanSessionData);
+    console.log('✅ Sesión creada exitosamente:', session.id);
+    
+    return session;
+    
+  } catch (error) {
+    console.error('❌ Error creando sesión:', error.message);
+    console.error('❌ Datos que causaron error:', sessionData);
+    throw error;
   }
+}
 
   /**
    * Buscar sesión activa por token
@@ -129,6 +155,40 @@ class AuthRepository {
     });
     return count;
   }
+  /**
+   * Actualizar solo la contraseña del usuario
+   */
+async updateUserPassword(userId, hashedPassword) {
+  try {
+    console.log(`🔐 Actualizando contraseña para usuario: ${userId}`);
+    
+    const [affectedRows] = await Usuario.update(
+      { 
+        password: hashedPassword
+      },
+      { 
+        where: { id: userId }
+      }
+    );
+    
+    console.log(`📊 Filas afectadas: ${affectedRows}`);
+    
+    if (affectedRows === 0) {
+      throw new NotFoundError('Usuario no encontrado para actualizar');
+    }
+    
+    const updatedUser = await Usuario.findByPk(userId);
+    console.log('✅ Contraseña actualizada en BD');
+    
+    return updatedUser;
+    
+  } catch (error) {
+    console.error('❌ Error actualizando contraseña:', error.message);
+    console.error('❌ Error name:', error.name);
+    console.error('❌ Error details:', error);
+    throw error;
+  }
+}
 }
 
 module.exports = new AuthRepository();

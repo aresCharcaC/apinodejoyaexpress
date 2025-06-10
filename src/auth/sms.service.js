@@ -303,9 +303,9 @@ class SmsService {
   }
 
   /**
-   * ✅ MÉTODO PRINCIPAL - COMPATIBLE CON auth.verification.js
+   * ✅ MÉTODO PRINCIPAL 
    */
-  async sendVerificationCode(incomingMessage, telefono) {
+  async sendVerificationCode(incomingMessage, telefono, forcedWhatsApp = false) {
     console.log(`📨 sendVerificationCode llamado con: "${incomingMessage}", ${telefono}`);
     
     if (incomingMessage) {
@@ -323,6 +323,18 @@ class SmsService {
       }
     } else {
       console.log(`📱 Llamada directa para ${telefono} - generando código sin webhook`);
+      
+      const code = this.generateOtp();
+      const cleanPhone = telefono.replace('whatsapp:', '');
+      
+     if (forcedWhatsApp) {
+      // ENVIAR POR WHATSAPP 
+      console.log(`📤 Forzando envío por WhatsApp para ${telefono}`);
+      const fromNumber = telefono.startsWith('whatsapp:') ? telefono : `whatsapp:${telefono}`;
+      return await this._sendCodeResponse(fromNumber);
+    } else {
+      //  registro normal
+      console.log(`📝 Solo generando código para ${telefono} - sin envío por WhatsApp`);
       
       const code = this.generateOtp();
       const cleanPhone = telefono.replace('whatsapp:', '');
@@ -347,12 +359,13 @@ class SmsService {
         message: 'Código generado (sin envío por WhatsApp)'
       };
     }
+    }
   }
 
   
   formatPhoneNumber(telefono) {
     let cleaned = telefono.replace(/\D/g, '');
-    
+   console.log("eltre al pemtdo formated phen") 
     if (!telefono.startsWith('+')) {
       if (cleaned.startsWith('57')) {
         cleaned = '+' + cleaned;

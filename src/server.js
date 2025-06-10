@@ -1,9 +1,15 @@
 const express = require('express');
+const http = require('node:http');
 const cookieParser = require('cookie-parser');
 const cors = require('cors');
 require('dotenv').config();
 
+const websocketServer = require('./websocket/websocket.server');
+
 const authRoutes = require('./auth/auth.routes');
+const conductorAuthRoutes = require('./conductor-auth/conductor-auth.routes');
+const rideRoutes = require('./rides/rides.routes') // para pasajeros
+const driverRoutes = require('./rides/drivers.routes') // para conductor
 
 const { sequelize } = require('./models');
 
@@ -11,6 +17,9 @@ const PORT = process.env.PORT || 3000;
 const HOST = process.env.HOST || '0.0.0.0';
 
 const app = express();
+
+// ✅ CREAR SERVIDOR HTTP 
+const httpServer = http.createServer(app);
 
 // ====================================
 // MIDDLEWARES GLOBALES
@@ -39,24 +48,20 @@ app.use(express.urlencoded({
 
 console.log('✅ Parsers JSON/URL configurados');
 
-
 app.use(cors({
   origin: function(origin, callback) {
     console.log('🔍 CORS Origin check:', origin);
     
-    // ✅ PERMITIR REQUESTS SIN ORIGIN (Flutter, Postman, curl)
     if (!origin) {
       console.log('✅ Request sin origin permitido');
       return callback(null, true);
     }
     
-    // ✅ PERMITIR CUALQUIER DOMINIO DE NGROK
     if (origin.includes('ngrok')) {
       console.log('✅ Request de ngrok permitido:', origin);
       return callback(null, true);
     }
     
-    // ✅ PERMITIR DOMINIOS LOCALES
     const allowedOrigins = [
       'http://localhost:3000',
       'http://localhost:8080',
@@ -69,7 +74,6 @@ app.use(cors({
       return callback(null, true);
     }
     
-    // ✅ TEMPORAL: PERMITIR TODOS PARA DEBUG
     console.log('✅ Request permitido (modo debug):', origin);
     return callback(null, true);
   },
@@ -84,31 +88,23 @@ app.use(cors({
     'Cache-Control',
     'ngrok-skip-browser-warning',
     'User-Agent',
-    '*' // ✅ PERMITIR CUALQUIER HEADER
+    '*'
   ],
   exposedHeaders: ['set-cookie'],
   optionsSuccessStatus: 200,
   preflightContinue: false
 }));
 
-console.log('✅ CORS configurado');
-
-
-
-// ✅ MIDDLEWARE ESPECÍFICO PARA NGROK - AGREGAR ESTO
 app.use((req, res, next) => {
-  // Headers adicionales para ngrok
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, ngrok-skip-browser-warning');
   
-  // Log para debug de ngrok
   if (req.get('host') && req.get('host').includes('ngrok')) {
     console.log('🔧 Request vía ngrok detectado');
     console.log('📥 Headers recibidos:', req.headers);
   }
   
-  // Manejar preflight requests
   if (req.method === 'OPTIONS') {
     console.log('✅ Preflight request manejado');
     res.status(200).end();
@@ -119,7 +115,7 @@ app.use((req, res, next) => {
 });
 
 console.log('✅ Middleware ngrok configurado');
-// Cookie parser
+
 app.use(cookieParser());
 console.log('✅ Cookie parser configurado');
 
@@ -131,7 +127,6 @@ if (process.env.NODE_ENV === 'development') {
     
     if (req.body && Object.keys(req.body).length > 0) {
       const bodyLog = { ...req.body };
-      // Ocultar campos sensibles en logs
       if (bodyLog.password) bodyLog.password = '[HIDDEN]';
       if (bodyLog.codigo) bodyLog.codigo = '[HIDDEN]';
       console.log(`   Body:`, bodyLog);
@@ -143,24 +138,17 @@ if (process.env.NODE_ENV === 'development') {
 
 // Middleware de seguridad básico
 app.use((req, res, next) => {
-  // Headers de seguridad
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('X-XSS-Protection', '1; mode=block');
-  
-  // Remover header que expone tecnología
   res.removeHeader('X-Powered-By');
   
   next();
 });
 
-console.log('✅ Middlewares de seguridad configurados');
-
 // ====================================
 // RUTAS
 // ====================================
-
-// Ruta de salud básica
 
 app.get('/', (req, res) => {
   res.json({
@@ -171,13 +159,15 @@ app.get('/', (req, res) => {
     environment: process.env.NODE_ENV || 'development',
     endpoints: {
       auth: '/api/auth',
+      drivers: '/api/conductor-auth',
+      rides: '/api/rides',
+      driversRides: '/api/rides/driver',
       health: '/health',
       docs: '/api/docs'
     }
   });
 });
 
-// ✅ ENDPOINT PARA DEBUG REDIS - AGREGAR DESPUÉS DE /test-ngrok
 app.get('/debug-redis', async (req, res) => {
   const { getRedisClient, isRedisAvailable } = require('./utils/redis');
   
@@ -189,13 +179,10 @@ app.get('/debug-redis', async (req, res) => {
     
     if (isRedisAvailable()) {
       const redis = getRedisClient();
-      
-      // Obtener todas las claves
       const allKeys = await redis.keys('*');
       const verificationKeys = await redis.keys('verification_code:*');
       const tempKeys = await redis.keys('temp_register:*');
       
-      // Obtener valores de claves de verificación
       const verificationData = {};
       for (const key of verificationKeys) {
         const value = await redis.get(key);
@@ -212,7 +199,6 @@ app.get('/debug-redis', async (req, res) => {
         verificationData: verificationData
       };
       
-      // Info de Redis
       redisStatus.info = await redis.info();
     }
     
@@ -232,7 +218,7 @@ app.get('/debug-redis', async (req, res) => {
 });
 
 console.log('✅ Endpoint debug Redis agregado: /debug-redis');
-// Ruta de salud detallada para monitoring
+
 app.get('/health', async (req, res) => {
   const healthCheck = {
     status: 'OK',
@@ -246,11 +232,11 @@ app.get('/health', async (req, res) => {
     pid: process.pid,
     services: {
       database: 'unknown',
-      redis: 'connected'
+      redis: 'connected',
+      websocket: 'connected' 
     }
   };
 
-  // Verificar estado de la base de datos
   try {
     await sequelize.authenticate();
     healthCheck.services.database = 'connected';
@@ -263,10 +249,57 @@ app.get('/health', async (req, res) => {
   res.status(statusCode).json(healthCheck);
 });
 
-// Rutas de la apirr
+
 app.use('/api/auth', authRoutes);
-console.log('✅ rutas de autenticación cargadas');
-// Ruta para documentación de la API
+app.use('/api/conductor-auth', conductorAuthRoutes);
+app.use('/api/rides/driver', driverRoutes); 
+app.use('/api/rides', rideRoutes);
+
+// FCM Token registration
+app.post('/api/fcm/register', async (req, res) => {
+  try {
+    const { user_type, fcm_token } = req.body;
+    const userId = req.user?.id || req.user?.conductorId;
+
+    if (!user_type || !fcm_token || !userId) {
+      return res.status(400).json({
+        success: false,
+        message: 'user_type, fcm_token y autenticación son requeridos',
+        ejemplo: {
+          user_type: 'usuario',
+          fcm_token: 'token-fcm-del-dispositivo'
+        }
+      });
+    }
+
+    const firebaseService = require('./notifications/firebase.service');
+    await firebaseService.registerToken(user_type, userId, fcm_token);
+
+    res.status(200).json({
+      success: true,
+      message: 'Token FCM registrado correctamente',
+      data: {
+        user_type,
+        user_id: userId,
+        registered_at: new Date()
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Error registrando token FCM:', error.message);
+    res.status(500).json({
+      success: false,
+      message: 'Error registrando token FCM'
+    });
+  }
+});
+
+console.log('✅ Rutas de autenticación cargadas:');
+console.log('   👥 Pasajeros: /api/auth');
+console.log('   🚗 Conductores: /api/conductor-auth');
+console.log('   🚀 Viajes para pasajero: /api/rides');
+console.log('   🚖 Viajes para conductores: /api/rides/driver');
+
 app.get('/api/docs', (req, res) => {
   res.json({
     success: true,
@@ -280,7 +313,7 @@ app.get('/api/docs', (req, res) => {
         'GET /api/docs': 'Esta documentación'
       },
       auth: {
-        'POST /api/auth/send-code': 'perapr veriicion de whtasapp',
+        'POST /api/auth/send-code': 'Preparar verificación de WhatsApp',
         'POST /api/auth/twilio/webhook': 'Webhook para Twilio',
         'POST /api/auth/verify-code': 'Verificar código SMS',
         'POST /api/auth/register': 'Completar registro de usuario',
@@ -290,101 +323,74 @@ app.get('/api/docs', (req, res) => {
         'POST /api/auth/forgot-password': 'Solicitar recuperación de contraseña',
         'POST /api/auth/reset-password': 'Cambiar contraseña',
         'GET /api/auth/profile': 'Obtener perfil (requiere autenticación)'
-      }
-    },
-    examples: {
-      'send-code': {
-        method: 'POST',
-        url: `/api/auth/send-code`,
-        body: { telefono: '+573001234567' },
-        response: { success: true, data: { message: 'Código enviado exitosamente', code: '123456' } }
       },
-      'login': {
-        method: 'POST',
-        url: `/api/auth/login`,
-        body: { telefono: '+573001234567', password: 'miPassword123' },
-        response: { success: true, data: { message: 'Inicio de sesión exitoso', user: {} } }
+      rides: {
+        'POST /api/rides/request': 'Solicitar viaje (pasajero)',
+        'GET /api/rides/:rideId/offers': 'Ver ofertas de viaje',
+        'POST /api/rides/:rideId/offers/:offerId/accept': 'Aceptar oferta',
+        'POST /api/rides/driver/offers': 'Crear oferta (conductor)',
+        'GET /api/rides/driver/nearby': 'Ver viajes cercanos (conductor)'
       }
     }
   });
 });
 
-// ====================================
-// MANEJO DE ERRORES
-// ====================================
 app.get('/test', (req, res) => {
   res.json({ success: true, message: 'Servidor básico funcionando' });
 });
 
-
-
-console.log('✅ Ruta de prueba básica cargada');
-// ====================================
-// MANEJO DE ERRORES
-// ====================================
-
+// Manejo de rutas no encontradas
 app.use((req, res, next) => {
-  // En lugar de usar '*', usar una función que capture todo
   res.status(404).json({
     success: false,
     message: 'Endpoint no encontrado',
     path: req.originalUrl,
     method: req.method,
     timestamp: new Date().toISOString(),
-    suggestion: 'Consulta /api/docs para ver endpoints disponibles',
-    availableEndpoints: [
-      'GET /',
-      'GET /health',
-      'GET /api/docs',
-      'GET /test'
-    ]
+    suggestion: 'Consulta /api/docs para ver endpoints disponibles'
   });
 });
-
-
-console.log('✅ Middlewares de error configurados');
-
-
 
 // ====================================
 // INICIALIZACIÓN DEL SERVIDOR
 // ====================================
 async function startServer() {
-  // PRIMERO: Iniciar servidor HTTP (sin esperar DB)
-  const server = app.listen(PORT, HOST, () => {
-    console.log('\n🚀 ====================================');
-    console.log(`   🎉 API Express lista para producción!`);
-    console.log(`   📍 URL: http://${HOST}:${PORT}`);
-    console.log(`   🌍 Entorno: ${process.env.NODE_ENV || 'development'}`);
-    console.log(`   📊 PID: ${process.pid}`);
-    console.log('   ====================================');
-    console.log('\n📱 Prueba los endpoints:');
-    console.log(`   🏠 Inicio: curl http://localhost:${PORT}/`);
-    console.log(`   ❤️ Health: curl http://localhost:${PORT}/health`);
-    console.log(`   📚 Docs: curl http://localhost:${PORT}/api/docs`);
-    console.log(`   📱 Enviar código: curl -X POST http://localhost:${PORT}/api/auth/send-code -H "Content-Type: application/json" -d '{"telefono":"+573001234567"}'`);
-    console.log('\n💡 ¡API lista para Flutter! 🎯\n');
-  });
+  try {
+    // ✅ INICIALIZAR WEBSOCKET ANTES DE EMPEZAR EL SERVIDOR
+    console.log('🔌 Inicializando WebSocket server...');
+    websocketServer.initialize(httpServer);
+    console.log('✅ WebSocket server inicializado correctamente');
+    
+    // ✅ INICIAR SERVIDOR HTTP
+    const server = httpServer.listen(PORT, HOST, () => {
+      console.log('\n🚀 ====================================');
+      console.log(`   🎉 API Express lista para producción!`);
+      console.log(`   📍 URL: http://${HOST}:${PORT}`);
+      console.log(`   🌍 Entorno: ${process.env.NODE_ENV || 'development'}`);
+      console.log(`   📊 PID: ${process.pid}`);
+      console.log(`   🔌 WebSocket: ACTIVO`);
+      console.log('   ====================================');
+      console.log('\n📱 Prueba los endpoints:');
+      console.log(`   🏠 Inicio: curl http://localhost:${PORT}/`);
+      console.log(`   ❤️ Health: curl http://localhost:${PORT}/health`);
+      console.log(`   📚 Docs: curl http://localhost:${PORT}/api/docs`);
+      console.log('\n💡 ¡API lista para Flutter! 🎯\n');
+    });
 
-  server.timeout = 30000;
-  server.keepAliveTimeout = 5000;
-  server.headersTimeout = 6000;
+    server.timeout = 30000;
+    server.keepAliveTimeout = 5000;
+    server.headersTimeout = 6000;
 
-  sequelize.authenticate()
-    .then(async () => {
-      console.log('✅ Base de datos conectada correctament');
+    // ✅ CONECTAR BASE DE DATOS (DESPUÉS DE INICIAR SERVIDOR)
+    try {
+      await sequelize.authenticate();
+      console.log('✅ Base de datos conectada correctamente');
       
-      // Sincronizar modelos en desarrollo
       if (process.env.NODE_ENV === 'development') {
-        try {
-          await sequelize.sync({ force: false, alter: false });
-          console.log('✅ Modelos sincronizados');
-        } catch (syncError) {
-          console.error('⚠️ Error sincronizando modelos:', syncError.message);
-        }
+        await sequelize.sync({ force: false, alter: false });
+        console.log('✅ Modelos sincronizados');
       }
-    })
-    .catch(error => {
+    } catch (error) {
       console.error('❌ Error conectando a la base de datos:', error.message);
       console.log('⚠️ El servidor continúa funcionando sin base de datos');
       
@@ -392,10 +398,41 @@ async function startServer() {
         console.log('🛑 Cerrando en producción por falta de BD');
         process.exit(1);
       }
-    });
+    }
+
+  } catch (error) {
+    console.error('❌ Error iniciando servidor:', error.message);
+    process.exit(1);
+  }
 }
 
+// ✅ MANEJO DE ERRORES NO CAPTURADOS
+process.on('uncaughtException', (error) => {
+  console.error('❌ Uncaught Exception:', error);
+  process.exit(1);
+});
 
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
+  process.exit(1);
+});
+
+// ✅ MANEJO DE CIERRE GRACEFUL
+process.on('SIGTERM', () => {
+  console.log('🛑 SIGTERM received, shutting down gracefully');
+  httpServer.close(() => {
+    console.log('✅ Server closed');
+    process.exit(0);
+  });
+});
+
+process.on('SIGINT', () => {
+  console.log('🛑 SIGINT received, shutting down gracefully');
+  httpServer.close(() => {
+    console.log('✅ Server closed');
+    process.exit(0);
+  });
+});
 
 if (require.main === module) {
   startServer();

@@ -94,7 +94,7 @@ async completeRegistration(userData) {
   } catch (error) {
     console.error('❌ Error en completeRegistration:', error.message);
     console.error('❌ Stack:', error.stack);
-    throw error; // ✅ RE-LANZAR EL ERROR PARA QUE LO MANEJE EL CONTROLLER
+    throw error; 
   }
 }
 
@@ -170,44 +170,90 @@ async completeRegistration(userData) {
    * RECUPERACIÓN DE CONTRASEÑA - Paso 1: Enviar código
    */
   async forgotPassword(telefono) {
-    AuthSchema.validateForgotPassword({ telefono });
-    
-    // Verificar que el usuario existe
-    const user = await authRepository.findUserByPhone(telefono);
-    if (!user || !user.password) {
-      // Por seguridad, no revelar si el usuario existe o no
-      return { message: 'Si el número está registrado, recibirá un código de recuperación' };
+    try {
+      console.log('🔍 Iniciando forgotPassword para:', telefono);
+      
+      AuthSchema.validateForgotPassword({ telefono });
+      console.log('✅ Schema validado');
+      
+      const smsService = require('./sms.service');
+      const formattedPhone = smsService.formatPhoneNumber(telefono);
+      console.log('📱 Teléfono formateado:', formattedPhone);
+      
+      const user = await authRepository.findUserByPhone(formattedPhone);
+      if (!user || !user.password) {
+        console.log('❌ Usuario no encontrado o sin contraseña');
+        return { 
+          message: 'Si el número está registrado, recibirá un código de recuperación',
+          telefono: formattedPhone 
+        };
+      }
+      
+      console.log('✅ Usuario encontrado:', user.id);
+      
+      console.log('📤 Generando código de recuperación...');
+      
+      // ✅ PASAR NULL COMO incomingMessage Y EL TELÉFONO FORMATEADO
+      const result = await verificationService.generateAndStoreCode(null, formattedPhone, true);
+      
+      console.log('✅ Código de recuperación generado exitosamente');
+      
+      return { 
+        message: 'Código de recuperación enviado por WhatsApp',
+        telefono: formattedPhone,
+        provider: result.provider,
+        timestamp: result.timestamp,
+        ...(process.env.NODE_ENV === 'development' && {
+          testCode: result.testCode // Solo en desarrollo
+        })
+      };
+      
+    } catch (error) {
+      console.error('❌ Error en forgotPassword:', error.message);
+      throw error;
     }
-    
-    // Generar y enviar código
-    await verificationService.generateAndStoreCode(telefono);
-    
-    return { message: 'Si el número está registrado, recibirá un código de recuperación' };
   }
 
   /**
    * RECUPERACIÓN DE CONTRASEÑA - Paso 2: Verificar código y cambiar contraseña
    */
-  async resetPassword(telefono, codigo, nuevaPassword) {
-    AuthSchema.validateResetPassword({ telefono, codigo, nuevaPassword });
+async resetPassword(telefono, codigo, nuevaPassword) {
+  try {
+    console.log('🔐 Iniciando resetPassword...');
     
-    // Verificar código
-    await verificationService.verifyCode(telefono, codigo);
+    const smsService = require('./sms.service');
+    const formattedPhone = smsService.formatPhoneNumber(telefono);
     
-    // Buscar usuario
-    const user = await authRepository.findUserByPhone(telefono);
+    const verificationResult = await verificationService.verifyCode(formattedPhone, codigo);
+    console.log('✅ Código verificado exitosamente');
+    
+    const user = await authRepository.findUserByPhone(formattedPhone);
+    
     if (!user) {
-      throw new AuthenticationError('Usuario no encontrado');
+      throw new Error('Usuario no encontrado');
     }
     
-    // Actualizar contraseña
-    await authRepository.updateUserPassword(user.id, nuevaPassword);
+    console.log(`📋 Usuario encontrado: ${user.id}, pasajero_id: ${user.pasajero_id}, conductor_id: ${user.conductor_id}`);
     
-    // Desactivar todas las sesiones del usuario por seguridad
-    await authRepository.deactivateAllUserSessions(user.id);
+    const bcrypt = require('bcryptjs');
+    const hashedPassword = await bcrypt.hash(nuevaPassword, 12);
     
-    return { message: 'Contraseña actualizada exitosamente' };
+    const updatedUser = await authRepository.updateUserPassword(user.id, hashedPassword);
+    
+    console.log('✅ Contraseña actualizada correctamente');
+    
+    await verificationService.clearTempToken(formattedPhone);
+    
+    return {
+      message: 'Contraseña actualizada exitosamente',
+      telefono: formattedPhone
+    };
+    
+  } catch (error) {
+    console.error('❌ Error en resetPassword:', error.message);
+    throw error;
   }
+}
 
   /**
    * Obtener perfil del usuario

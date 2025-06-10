@@ -69,7 +69,6 @@ class AuthController {
    * POST /api/auth/twilio/webhook
    * PROCESAR MENSAJES DE TWILIO - AQUÍ SÍ SE ENVÍA EL CÓDIGO
    */
- // src/auth/auth.controller.js - MÉTODO twilioWebhook CORREGIDO
 
 async twilioWebhook(req, res) {
   try {
@@ -282,7 +281,7 @@ async login(req, res) {
       });
     }
 
-    console.log(`📱 Intentando login para: ${telefono}`);
+
 
     // ✅ FORMATEAR TELÉFONO
     const smsService = require('./sms.service');
@@ -335,108 +334,237 @@ async login(req, res) {
    * POST /api/auth/refresh
    * Renovar access token
    */
-  async refreshToken(req, res) {
-    try {
-      const refreshToken = req.cookies.refreshToken;
-      
-      const result = await authService.refreshToken(refreshToken);
-      
-      // Configurar solo el nuevo access token
-      res.cookie('accessToken', result.accessToken, {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'lax',
-        maxAge: 15 * 60 * 1000 // 15 minutos
+
+async refreshToken(req, res) {
+  try {
+    const refreshToken = req.cookies.refreshToken;
+    
+    if (!refreshToken) {
+      return res.status(401).json({
+        success: false,
+        message: 'Refresh token requerido'
       });
-      
-      res.status(200).json({
-        success: true,
-        data: { message: 'Token renovado exitosamente' }
-      });
-    } catch (error) {
-      this.handleError(res, error);
     }
+    
+    const result = await authService.refreshToken(refreshToken);
+    
+    // Configurar solo el nuevo access token
+    res.cookie('accessToken', result.accessToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      maxAge: 15 * 60 * 1000 // 15 minutos
+    });
+    
+    res.status(200).json({
+      success: true,
+      data: { message: 'Token renovado exitosamente' }
+    });
+    
+  } catch (error) {
+    console.error('❌ Error en refreshToken controller:', error.message);
+    
+    // ✅ MANEJO DE ERRORES SIN THIS
+    if (error.message.includes('Refresh token requerido')) {
+      return res.status(401).json({
+        success: false,
+        message: 'Refresh token requerido'
+      });
+    }
+    
+    if (error.message.includes('Sesión inválida') || error.message.includes('expirada')) {
+      return res.status(401).json({
+        success: false,
+        message: 'Sesión expirada. Inicie sesión nuevamente.'
+      });
+    }
+    
+    res.status(500).json({
+      success: false,
+      message: 'Error interno del servidor',
+      ...(process.env.NODE_ENV === 'development' && {
+        error: error.message
+      })
+    });
   }
+}
 
   /**
    * POST /api/auth/logout
    * Cerrar sesión
    */
-  async logout(req, res) {
-    try {
-      const refreshToken = req.cookies.refreshToken;
-      
-      await authService.logout(refreshToken);
-      
-      // Limpiar cookies
-      res.clearCookie('accessToken');
-      res.clearCookie('refreshToken');
-      
-      res.status(200).json({
-        success: true,
-        data: { message: 'Sesión cerrada exitosamente' }
-      });
-    } catch (error) {
-      this.handleError(res, error);
-    }
+
+async logout(req, res) {
+  try {
+    const refreshToken = req.cookies.refreshToken;
+    
+    await authService.logout(refreshToken);
+    
+    // Limpiar cookies
+    res.clearCookie('accessToken');
+    res.clearCookie('refreshToken');
+    
+    res.status(200).json({
+      success: true,
+      data: { message: 'Sesión cerrada exitosamente' }
+    });
+    
+  } catch (error) {
+    console.error('❌ Error en logout controller:', error.message);
+    
+    // ✅ MANEJO DE ERRORES SIN THIS
+    res.status(500).json({
+      success: false,
+      message: 'Error cerrando sesión',
+      ...(process.env.NODE_ENV === 'development' && {
+        error: error.message
+      })
+    });
   }
+}
 
   /**
    * POST /api/auth/forgot-password
    * Solicitar código para recuperar contraseña
    */
-  async forgotPassword(req, res) {
-    try {
-      const { telefono } = req.body;
-      
-      const result = await authService.forgotPassword(telefono);
-      
-      res.status(200).json({
-        success: true,
-        data: result
+async forgotPassword(req, res) {
+  try {
+    console.log('\n🔥 === FORGOT PASSWORD DEBUG ===');
+    console.log('Body recibido:', req.body);
+    console.log('================================\n');
+    
+    const { telefono } = req.body;
+    
+    // ✅ VALIDACIONES BÁSICAS
+    if (!telefono) {
+      return res.status(400).json({
+        success: false,
+        message: 'El número de teléfono es requerido'
       });
-    } catch (error) {
-      this.handleError(res, error);
     }
+    
+    console.log('📱 Iniciando recuperación para:', telefono);
+    
+    // ✅ LLAMAR SERVICIO
+    const result = await authService.forgotPassword(telefono);
+    
+    console.log('✅ Código de recuperación procesado');
+    
+    // ✅ RESPUESTA EXITOSA
+    res.status(200).json({
+      success: true,
+      data: result
+    });
+    
+  } catch (error) {
+    console.error('❌ Error en forgotPassword controller:', error.message);
+    console.error('❌ Stack:', error.stack);
+    
+    // ✅ MANEJO DE ERRORES SIN THIS
+    handleForgotPasswordError(res, error);
   }
+}
 
   /**
    * POST /api/auth/reset-password
    * Verificar código y cambiar contraseña
    */
-  async resetPassword(req, res) {
-    try {
-      const { telefono, codigo, nuevaPassword } = req.body;
-      
-      const result = await authService.resetPassword(telefono, codigo, nuevaPassword);
-      
-      res.status(200).json({
-        success: true,
-        data: result
+
+async resetPassword(req, res) {
+  try {
+    console.log('\n🔥 === RESET PASSWORD DEBUG ===');
+    console.log('Body recibido:', req.body);
+    console.log('================================\n');
+    
+    const { telefono, codigo, nuevaPassword } = req.body;
+    
+    // ✅ VALIDACIONES BÁSICAS
+    if (!telefono || !codigo || !nuevaPassword) {
+      return res.status(400).json({
+        success: false,
+        message: 'Teléfono, código y nueva contraseña son requeridos'
       });
-    } catch (error) {
-      this.handleError(res, error);
     }
+
+    if (codigo.length !== 6) {
+      return res.status(400).json({
+        success: false,
+        message: 'El código debe tener 6 dígitos'
+      });
+    }
+
+    if (nuevaPassword.length < 6) {
+      return res.status(400).json({
+        success: false,
+        message: 'La contraseña debe tener al menos 6 caracteres'
+      });
+    }
+    
+    console.log('🔐 Iniciando reset de contraseña para:', telefono);
+    
+    // ✅ LLAMAR SERVICIO
+    const result = await authService.resetPassword(telefono, codigo, nuevaPassword);
+    
+    console.log('✅ Contraseña actualizada exitosamente');
+    
+    // ✅ RESPUESTA EXITOSA
+    res.status(200).json({
+      success: true,
+      data: result
+    });
+    
+  } catch (error) {
+    console.error('❌ Error en resetPassword controller:', error.message);
+    console.error('❌ Stack:', error.stack);
+    
+    // ✅ MANEJO DE ERRORES SIN THIS
+    handleResetPasswordError(res, error);
   }
+}
 
   /**
    * GET /api/auth/profile
    * Obtener perfil del usuario autenticado
    */
-  async getProfile(req, res) {
-    try {
-      const userId = req.user.userId;
-      
-      const user = await authService.getProfile(userId);
-      
-      res.status(200).json({
-        success: true,
-        data: user
+
+async getProfile(req, res) {
+  try {
+    const userId = req.user.userId;
+    
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: 'Token de usuario inválido'
       });
-    } catch (error) {
-      this.handleError(res, error);
     }
+    
+    const user = await authService.getProfile(userId);
+    
+    res.status(200).json({
+      success: true,
+      data: user
+    });
+    
+  } catch (error) {
+    console.error('❌ Error en getProfile controller:', error.message);
+    
+    // ✅ MANEJO DE ERRORES SIN THIS
+    if (error.message.includes('Usuario no encontrado')) {
+      return res.status(404).json({
+        success: false,
+        message: 'Usuario no encontrado'
+      });
+    }
+    
+    res.status(500).json({
+      success: false,
+      message: 'Error obteniendo perfil',
+      ...(process.env.NODE_ENV === 'development' && {
+        error: error.message
+      })
+    });
   }
+}
 
   /**
    * Configurar cookies de tokens
@@ -567,6 +695,83 @@ function handleLoginError(res, error) {
     })
   });
 }
+function handleForgotPasswordError(res, error) {
+  console.error('🔥 Error en forgot password:', error.message);
+  
+  // ✅ ERRORES ESPECÍFICOS
+  if (error.message.includes('Formato de telefono inválido')) {
+    return res.status(400).json({
+      success: false,
+      message: 'Formato de teléfono inválido. Use formato internacional (+51XXXXXXXXX)'
+    });
+  }
+  
+  if (error.message.includes('Teléfono es requerido')) {
+    return res.status(400).json({
+      success: false,
+      message: 'El número de teléfono es requerido'
+    });
+  }
+  
+  // ✅ ERROR GENERAL (no revelar detalles por seguridad)
+  res.status(500).json({
+    success: false,
+    message: 'Error interno del servidor. Intente nuevamente.',
+    ...(process.env.NODE_ENV === 'development' && {
+      error: error.message
+    })
+  });
+}
 
+
+function handleResetPasswordError(res, error) {
+  console.error('🔥 Error en reset password:', error.message);
+  
+  // ✅ ERRORES ESPECÍFICOS DE VERIFICACIÓN
+  if (error.message.includes('expirado') || error.message.includes('no encontrado')) {
+    return res.status(400).json({
+      success: false,
+      message: 'Código expirado o no encontrado. Solicite un nuevo código de recuperación.'
+    });
+  }
+  
+  if (error.message.includes('incorrecto')) {
+    return res.status(400).json({
+      success: false,
+      message: 'Código incorrecto. Verifique e intente de nuevo.'
+    });
+  }
+  
+  if (error.message.includes('Usuario no encontrado')) {
+    return res.status(404).json({
+      success: false,
+      message: 'Usuario no encontrado. Verifique el número de teléfono.'
+    });
+  }
+  
+  if (error.message.includes('Token temporal inválido')) {
+    return res.status(400).json({
+      success: false,
+      message: 'Token temporal inválido. Solicite un nuevo código de recuperación.'
+    });
+  }
+  
+  // ✅ ERRORES DE VALIDACIÓN
+  if (error.message.includes('Teléfono') || error.message.includes('código') || error.message.includes('contraseña')) {
+    return res.status(400).json({
+      success: false,
+      message: error.message
+    });
+  }
+  
+  // ✅ ERROR GENERAL
+  res.status(500).json({
+    success: false,
+    message: 'Error interno del servidor. Intente nuevamente.',
+    ...(process.env.NODE_ENV === 'development' && {
+      error: error.message
+    })
+  });
+}
 
 module.exports = new AuthController();
