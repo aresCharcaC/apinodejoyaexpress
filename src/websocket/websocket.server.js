@@ -67,7 +67,7 @@ handleConnection(socket){
         if(socket.userType === 'usuario'){
             this.connectedUsers.set(socket.userId, socket.id);
             socket.join(`user_${socket.userId}`);
-        }else if(socket.userType === 'coductor'){
+        }else if(socket.userType === 'conductor'){
             this.connectedDrivers.set(socket.userId, socket.id);
             socket.join(`driver_${socket.userId}`);
         }

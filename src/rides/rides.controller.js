@@ -244,23 +244,21 @@ class RidesController{
    */
 
   async updateDriverLocation(req, res) {
-    try {
-      console.log(`📍 Actualizando ubicación para conductor: ${req.user.conductorId}`);
-      console.log('Nueva ubicación:', req.body);
+  try {
+    console.log(`📍 Actualizando ubicación para conductor: ${req.user.conductorId}`);
+    console.log('Nueva ubicación:', req.body);
 
-      const conductorId = req.user.conductorId;
-      const { lat, lng } = req.body;
+    const conductorId = req.user.conductorId;
+    const { lat, lng } = req.body;
 
-      if (typeof lat !== 'number' || typeof lng !== 'number') {
-        return res.status(400).json({
-          success: false,
-          message: 'Latitud y longitud son requeridas como números',
-          ejemplo: {
-            lat: -12.0464,
-            lng: -77.0428
-          }
-        });
-      }
+    if (typeof lat !== 'number' || typeof lng !== 'number') {
+      return res.status(400).json({
+        success: false,
+        message: 'Latitud y longitud son requeridas como números',
+        ejemplo: { lat: -12.0464, lng: -77.0428 }
+      });
+    }
+
     if (lat < -90 || lat > 90 || lng < -180 || lng > 180) {
       return res.status(400).json({
         success: false,
@@ -268,61 +266,75 @@ class RidesController{
         validacion: 'lat: -90 a 90, lng: -180 a 180'
       });
     }
-    // verificando si el conductor esta activo y disponible
+
+    // Verificar si el conductor está activo y disponible
     const conductor = await Conductor.findByPk(conductorId, {
-        attributes: ['id', 'estado', 'disponible']
+      attributes: ['id', 'estado', 'disponible']
     });
-    if(!conductor){
-        return res.status(404).json({
-            success: false,
-            message: 'Conductor no encontrado'
-        })
-    }
-    if(conductor.estado !== 'activo' || !conductor.disponible){
-        return res.status(403).json({
-            success: false,
-            massage: 'Conductor no està disponible para enviar ubicaciòn',
-            estado_actual: {
-                estado: conductor.estado,
-                disponible: conductor.disponible
-            }
-        })
-    }
-    // acutalizar la ubicacion en Redis  y Postgres
-    const result = await locationService.updateDriverLocation(conductorId, lat, lng);
 
-      console.log(`✅ Ubicación actualizada: ${lat}, ${lng}`);
+    if (!conductor) {
+      return res.status(404).json({
+        success: false,
+        message: 'Conductor no encontrado'
+      });
+    }
 
-      res.status(200).json({
-        success: true,
-        message: 'Ubicacion actualizada correctamente',
-        data: {
-            conductor_id: conductorId,
-            coordenadas: {lat, lng},
-            timestamp: result.timestamp,
-            ttl_segundos:result.ttl,
-            en_redis: true
+    if (conductor.estado !== 'activo' || !conductor.disponible) {
+      return res.status(403).json({
+        success: false,
+        message: 'Conductor no está disponible para enviar ubicación',
+        estado_actual: {
+          estado: conductor.estado,
+          disponible: conductor.disponible
         }
       });
-    } catch (error) {
+    }
+
+    // ✅ AQUÍ ESTABA EL PROBLEMA - FALTABA ESTA PARTE:
+    // Actualizar la ubicación en Redis y Postgres
+    const locationService = require('./location.service');
+    const result = await locationService.updateDriverLocation(conductorId, lat, lng);
+
+    console.log(`✅ Ubicación actualizada: ${lat}, ${lng}`);
+
+    res.status(200).json({
+      success: true,
+      message: 'Ubicación actualizada correctamente',
+      data: {
+        conductor_id: conductorId,
+        coordenadas: { lat, lng },
+        timestamp: result.timestamp,
+        ttl_segundos: result.ttl,
+        en_redis: true
+      }
+    });
+
+  } catch (error) {
     console.error('❌ Error en updateDriverLocation:', error.message);
 
-      if(error.message.includes('Redis no disponible')){
-        return res.status(503).json({
-            success: false,
-            message: 'Servicio de ubicaciòn temporalmente no diponible',
-            type: 'service_unavailable'
-        });
-      }
-      if(error.message.includes('no està activo')){
-        return res.status(403).json({
-            success: false,
-            message: error.message,
-            type: 'driver_inactive'
-        });
-      }
+    if (error.message.includes('Redis no disponible')) {
+      return res.status(503).json({
+        success: false,
+        message: 'Servicio de ubicación temporalmente no disponible',
+        type: 'service_unavailable'
+      });
     }
+
+    if (error.message.includes('no está activo')) {
+      return res.status(403).json({
+        success: false,
+        message: error.message,
+        type: 'driver_inactive'
+      });
+    }
+
+    return res.status(500).json({
+      success: false,
+      message: 'Error interno del servidor',
+      error: error.message
+    });
   }
+}
 
 
 /**
