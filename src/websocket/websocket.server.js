@@ -26,7 +26,7 @@ class WebSocketServer{
 
         this.io.use(async (socket, next)=>{
             try{
-                const token = socket.handshake.auth.token || socket.handshake.headers.authorization?.replace('Baerer ', '');
+                const token = socket.handshake.auth.token || socket.handshake.headers.authorization?.replace('Bearer ', '');
                 if (!token){
                     return next(new Error('Token no proporcionado'));
                 }
@@ -82,9 +82,9 @@ handleConnection(socket){
         }
         // TODOS los evento para conductores
         if(socket.userType === 'conductor'){
-            socket.on('ride:offer', (data) =>this.handleDriverOffer(socket, data)),
+            socket.on('ride:offer', (data) => this.handleDriverOffer(socket, data));
             socket.on('ride:accept_counter', (data)=> this.handleAcceptCounter(socket, data));
-            socket.on('localtion:update', (data)=> this.handleLocationUpdate(socket, data));
+            socket.on('location:update', (data)=> this.handleLocationUpdate(socket, data));
         }
 
         // Eventos generales
@@ -139,7 +139,7 @@ handleLocationUpdate(socket, data){
   // notificar al pasajero
   notifyUser(userId, event, data){
     try {
-        const room = `use_${userId}`;
+        const room = `user_${userId}`;
         this.io.to(room).emit(event, data);
         console.log(`Notificaciòn enviada al usuario ${userId}: ${event}`)
         

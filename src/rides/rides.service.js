@@ -249,7 +249,7 @@ async notifyNearbyDrivers(drivers, viaje){
 
         // ⭐️ Creamos la primera oferta
         const fechaExpiracion = new Date();
-        fechaExpiracion.setMinutes(fechaExpiracion.getMinutes() + 5) // solo abrà 5 min para que acepte el conducto sino le enviarà que no tiene conductores disponible en su zona
+        fechaExpiracion.setMinutes(fechaExpiracion.getMinutes() + 8) // solo abrà 8 min para que acepte el conducto sino le enviarà que no tiene conductores disponible en su zona
 
         const oferta = await OfertaViaje.create({
             id: uuidv4(),
@@ -1523,7 +1523,7 @@ calculateArrivalTime(conductorLat, conductorLng, origenLat, origenLng){
             }
 
             // actualizamos la oferta con la nueva tarifa
-            await viaje.update({
+            await oferta.update({
                 tarifa_propuesta: nueva_tarifa,
                 mensaje: mensaje,
                 fecha_contraoferta_conductor: new Date()

@@ -292,7 +292,6 @@ class RidesController{
 
     // ✅ AQUÍ ESTABA EL PROBLEMA - FALTABA ESTA PARTE:
     // Actualizar la ubicación en Redis y Postgres
-    const locationService = require('./location.service');
     const result = await locationService.updateDriverLocation(conductorId, lat, lng);
 
     console.log(`✅ Ubicación actualizada: ${lat}, ${lng}`);
@@ -510,7 +509,6 @@ async debugRedisDrivers(req, res) {
       });
     }
 
-    const locationService = require('./location.service');
     const { getRedisClient, isRedisAvailable } = require('../utils/redis');
 
     if (!isRedisAvailable()) {
@@ -589,7 +587,6 @@ async debugSyncDriver(req, res) {
     const lat = -16.42531;
     const lng = -71.51929;
 
-    const locationService = require('./location.service');
     const { Conductor } = require('../models');
 
     // 1. Actualizar en BD
@@ -727,7 +724,7 @@ async createDriverCounterOffer(req, res){
     return res.status(500).json({
       success: false,
       message: 'Error interno del servidor',
-      error: error.massage  // ⛔️
+      error: error.message  // ⛔️
     })
   }
 }
