@@ -18,6 +18,19 @@ class LocationService{
         try{
             console.log(`🏁 Actualiando la ubicaciòn del conducotro ${conductorId}: lat: ${lat}, long: ${lng}`);
 
+            // Validar parámetros de entrada
+            if (!conductorId) {
+                throw new Error("conductorId es requerido");
+            }
+            
+            if (typeof lat !== 'number' || typeof lng !== 'number') {
+                throw new Error(`Coordenadas inválidas: lat=${lat} (${typeof lat}), lng=${lng} (${typeof lng})`);
+            }
+            
+            if (isNaN(lat) || isNaN(lng)) {
+                throw new Error(`Coordenadas NaN: lat=${lat}, lng=${lng}`);
+            }
+
             // verificamos si redis esta ddisponible
             if(!isRedisAvailable()){
                 throw new Error("Redis no dispnible para ubicaciones"); 
@@ -44,7 +57,7 @@ class LocationService{
                 }
                 }
             // una vez asegurado los datos 
-            // vamos a guradar la ubicaion en redis
+            // vamos a guardar la ubicacion en redis
             await redis.geoAdd(this.REDIS_KEYS.DRIVER_LOCATIONS, {
                 longitude: lng,
                 latitude: lat,
@@ -138,10 +151,11 @@ class LocationService{
    * Busca conductores en radio de 1km que estén (activos)
    */
 
-  async findNearbyDrivers(lat, lng, radiusKm = 1){
+  async findNearbyDrivers(lat, lng, radiusKm = 20){
     try{
 
         console.log(`✅ Buscando conductores cerca de ${lat} ${lng} en ${radiusKm}Km a la redonda`);
+        console.log(`🔍 isRedisAvailable: ${isRedisAvailable()} (connected: ${getRedisClient()?.isReady}, redis: ${!!getRedisClient()}, ready: ${getRedisClient()?.status === 'ready'})`);
 
         if(!isRedisAvailable()){
             console.warn('  💀 Redis no disponible en findNeaarbyDrivers() y se esta utilizando POSTGRESQL');
@@ -152,65 +166,92 @@ class LocationService{
 
         const redis = getRedisClient();
         
-        const nearbyDriverIds = await redis.geoRadius(
+        // Verificar que los parámetros sean números válidos
+        if (typeof lng !== 'number' || typeof lat !== 'number') {
+            console.error('❌ Coordenadas inválidas:', { lat, lng });
+            return await this.findNearbyDriversFromDB(lat, lng, radiusKm);
+        }
+        
+        // ✅ CORREGIR LA API DE REDIS - usar la sintaxis correcta
+        let nearbyDriverIds = [];
+        try {
+            // Usar GEORADIUS con la sintaxis correcta para node-redis v4+
+            const results = await redis.sendCommand([
+                'GEORADIUS',
                 this.REDIS_KEYS.DRIVER_LOCATIONS,
-                { longitude: lng, latitude: lat },
-                radiusKm,
+                lng.toString(),
+                lat.toString(),
+                radiusKm.toString(),
                 'km',
-                { COUNT: 20 }
-            );
+                'COUNT',
+                '20'
+            ]);
+            nearbyDriverIds = results || [];
+        } catch (redisError) {
+            console.error('❌ Error en GEORADIUS Redis:', redisError.message);
+            console.log('🔄 Fallback a PostgreSQL por error Redis');
+            return await this.findNearbyDriversFromDB(lat, lng, radiusKm);
+        }
 
-            console.log(`📍 Encontrados ${nearbyDriverIds.length} conductores IDs:`, nearbyDriverIds);
+        console.log(`📍 Encontrados ${nearbyDriverIds.length} conductores IDs:`, nearbyDriverIds);
 
-            const activeDrivers = [];
+        const activeDrivers = [];
 
-            for (const conductorId of nearbyDriverIds) {
-                console.log(`🔍 Verificando conductor: ${conductorId}`);
+        for (const conductorId of nearbyDriverIds) {
+            console.log(`🔍 Verificando conductor: ${conductorId}`);
 
-                // Verificar status en Redis
-                const status = await redis.get(`${this.REDIS_KEYS.DRIVER_STATUS}${conductorId}`);
-                console.log(`📊 Status en Redis: ${status}`);
+            // Verificar status en Redis
+            const status = await redis.get(`${this.REDIS_KEYS.DRIVER_STATUS}${conductorId}`);
+            console.log(`📊 Status en Redis: ${status}`);
 
-                if (status === 'activo') {
-                    // Verificar en BD
-                    const conductor = await Conductor.findByPk(conductorId, {
-                        attributes: ['id', 'nombre_completo', 'telefono', 'estado', 'disponible', 'ubicacion_lat', 'ubicacion_lng']
-                    });
+            if (status === 'activo') {
+                // Verificar en BD
+                const conductor = await Conductor.findByPk(conductorId, {
+                    attributes: ['id', 'nombre_completo', 'telefono', 'estado', 'disponible', 'ubicacion_lat', 'ubicacion_lng']
+                });
 
-                    console.log(`💾 Conductor en BD:`, conductor ? {
-                        id: conductor.id,
-                        estado: conductor.estado,
-                        disponible: conductor.disponible
-                    } : 'NO ENCONTRADO');
+                console.log(`💾 Conductor en BD:`, conductor ? {
+                    id: conductor.id,
+                    estado: conductor.estado,
+                    disponible: conductor.disponible
+                } : 'NO ENCONTRADO');
 
-                    if (conductor && conductor.estado === 'activo' && conductor.disponible === true) {
-                        // Calcular distancia manualmente
-                        const distance = this.calculateDistance(
-                            lat, lng,
-                            parseFloat(conductor.ubicacion_lat),
-                            parseFloat(conductor.ubicacion_lng)
-                        );
-
-                        console.log(`✅ Conductor ${conductorId} es válido - Distancia: ${distance}km`);
-
-                        activeDrivers.push({
-                            conductorId: conductorId,
-                            nombre: conductor.nombre_completo,
-                            telefono: conductor.telefono,
-                            distance: distance,
-                            lat: parseFloat(conductor.ubicacion_lat),
-                            lng: parseFloat(conductor.ubicacion_lng)
-                        });
-                    } else {
-                        console.log(`❌ Conductor ${conductorId} no es válido - Estado: ${conductor?.estado}, Disponible: ${conductor?.disponible}`);
+                if (conductor && conductor.estado === 'activo' && conductor.disponible === true) {
+                    // Calcular distancia manualmente - Validar coordenadas antes de parseFloat
+                    const conductorLat = conductor.ubicacion_lat;
+                    const conductorLng = conductor.ubicacion_lng;
+                    
+                    if (!conductorLat || !conductorLng) {
+                        console.log(`❌ Conductor ${conductorId} tiene coordenadas nulas - Lat: ${conductorLat}, Lng: ${conductorLng}`);
+                        continue;
                     }
-                } else {
-                    console.log(`❌ Conductor ${conductorId} no está activo en Redis - Status: ${status}`);
-                }
-            }
+                    
+                    const distance = this.calculateDistance(
+                        lat, lng,
+                        parseFloat(conductorLat),
+                        parseFloat(conductorLng)
+                    );
 
-            console.log(`✅ ${activeDrivers.length} conductores activos encontrados`);
-            return activeDrivers.sort((a, b) => a.distance - b.distance); 
+                    console.log(`✅ Conductor ${conductorId} es válido - Distancia: ${distance}km`);
+
+                    activeDrivers.push({
+                        conductorId: conductorId,
+                        nombre: conductor.nombre_completo,
+                        telefono: conductor.telefono,
+                        distance: distance,
+                        lat: parseFloat(conductorLat),
+                        lng: parseFloat(conductorLng)
+                    });
+                } else {
+                    console.log(`❌ Conductor ${conductorId} no es válido - Estado: ${conductor?.estado}, Disponible: ${conductor?.disponible}`);
+                }
+            } else {
+                console.log(`❌ Conductor ${conductorId} no está activo en Redis - Status: ${status}`);
+            }
+        }
+
+        console.log(`✅ ${activeDrivers.length} conductores activos encontrados`);
+        return activeDrivers.sort((a, b) => a.distance - b.distance); 
     }catch(error){
         console.error('❌ Error buscando conductores cercano: ', error.message);
         return await this.findNearbyDriversFromDB(lat, lng, radiusKm);
@@ -222,35 +263,36 @@ class LocationService{
    * ESto funcion solo se ejecutta cuando la busqueda por geoRedis falle
 */
 
-        async findNearbyDriversFromDB(lat, lng, radiusKm = 1){
+        async findNearbyDriversFromDB(lat, lng, radiusKm = 20){
         try{
             console.log(`🔄 Búsqueda fallback con PostgreSQL`);
             
-            const query = `
-                SELECT 
-                    c.id,
-                    c.nombre_completo,
-                    c.telefono,
-                    c.ubicacion_lat,
-                    c.ubicacion_lng,
-                    (6371 * acos(
-                        cos(radians(:lat)) *
-                        cos(radians(c.ubicacion_lat)) *
-                        cos(radians(c.ubicacion_lng) - radians(:lng)) +
-                        sin(radians(:lat)) *
-                        sin(radians(c.ubicacion_lat))
-                    )) AS distance
-                FROM conductores c
-                WHERE c.estado = 'activo' 
-                    AND c.disponible = true 
-                    AND c.ubicacion_lat IS NOT NULL 
-                    AND c.ubicacion_lng IS NOT NULL
-                HAVING distance <= :radiusKm
+            // Usar una subconsulta para evitar el error de HAVING con alias
+            const results = await Conductor.sequelize.query(`
+                SELECT * FROM (
+                    SELECT 
+                        c.id,
+                        c.nombre_completo,
+                        c.telefono,
+                        c.ubicacion_lat,
+                        c.ubicacion_lng,
+                        (6371 * acos(
+                            cos(radians(:lat)) *
+                            cos(radians(c.ubicacion_lat)) *
+                            cos(radians(c.ubicacion_lng) - radians(:lng)) +
+                            sin(radians(:lat)) *
+                            sin(radians(c.ubicacion_lat))
+                        )) AS distance
+                    FROM conductores c
+                    WHERE c.estado = 'activo' 
+                        AND c.disponible = true 
+                        AND c.ubicacion_lat IS NOT NULL 
+                        AND c.ubicacion_lng IS NOT NULL
+                ) AS subquery
+                WHERE distance <= :radiusKm
                 ORDER BY distance ASC
                 LIMIT 20
-            `;
-
-            const [results] = await Conductor.sequelize.query(query, {
+            `, {
                 replacements: { lat, lng, radiusKm },
                 type: Conductor.sequelize.QueryTypes.SELECT
             });
@@ -260,9 +302,9 @@ class LocationService{
                 nombre: conductor.nombre_completo,
                 telefono: conductor.telefono,
                 distance: parseFloat(conductor.distance || 0),
-                lat: parseFloat(conductor.ubicacion_lat),
-                lng: parseFloat(conductor.ubicacion_lng)
-            }));
+                lat: parseFloat(conductor.ubicacion_lat || 0),
+                lng: parseFloat(conductor.ubicacion_lng || 0)
+            })).filter(conductor => conductor.lat !== 0 && conductor.lng !== 0);
 
             console.log(`✅ Se encontraron ${conductores.length} conductores cercanos usando PostgreSQL`);
             return conductores;
@@ -284,8 +326,8 @@ class LocationService{
             console.log(` ✅ Desactivando al conducto ${conductorId} `);
             if(isRedisAvailable()){
                 const redis  = getRedisClient()
-                // eleiminando el geo set
-                await redis.geoRem(this.REDIS_KEYS.DRIVER_LOCATIONS, conductorId);
+                // eliminando del geo set
+                await redis.zRem(this.REDIS_KEYS.DRIVER_LOCATIONS, conductorId);
 
                 // Ellimina el estado 
                 await redis.del(`${this.REDIS_KEYS.DRIVER_STATUS}${conductorId}`);

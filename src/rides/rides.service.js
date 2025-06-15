@@ -76,7 +76,9 @@ class RidesService{
                 puede_reintentar: true
             });
 
-            // Push notification
+            // Push notification - DESHABILITADO TEMPORALMENTE
+            console.log('🚫 Push notification omitida - Firebase deshabilitado');
+            /*
             try {
                 await firebaseService.sendToUser(userId, {
                     title: '😔 No hay conductores disponibles',
@@ -89,6 +91,7 @@ class RidesService{
             } catch (pushError) {
                 console.warn('⚠️ Error enviando push notification:', pushError.message);
             }
+            */
 
             return {
                 success: false,
@@ -228,7 +231,10 @@ async notifyNearbyDrivers(drivers, viaje){
                 // lo notificamos via websocket para que le llegue en teimpo real al pasajero
                 websocketServer.notifyDriver(driver.conductorId, 'ride:new_request', notificationData);
 
-                // push notificaton si esta fueraa de la app
+                // push notificaton si esta fueraa de la app - DESHABILITADO TEMPORALMENTE
+                console.log(`🚫 Push notification omitida para conductor ${driver.conductorId} - Firebase deshabilitado`);
+                const pushResult = { success: true, disabled: true }; // Simular respuesta exitosa
+                /*
                 const pushResult = await firebaseService.sendToDriver(driver.conductorId, {
                     title: ' 😮‍💨 Nueva solicitud de viaje',
                     body: viaje.precio_sugerido 
@@ -240,6 +246,7 @@ async notifyNearbyDrivers(drivers, viaje){
                         temeout: this.TIMEOUT_SECONDS.toString()
                     }
                 });
+                */
 
                 notifications.push({
                     conductorId: driver.conductorId,
@@ -355,7 +362,9 @@ async notifyNearbyDrivers(drivers, viaje){
         // para notificacoin utlizamos websocker del pasajero
         websocketServer.notifyUser(viaje.usuario_id, 'ride:offer_received', notificationData);
 
-        // tambine le envimos un push notification con firebase 
+        // tambine le envimos un push notification con firebase - DESHABILITADO TEMPORALMENTE
+        console.log(`🚫 Push notification omitida para usuario ${viaje.usuario_id} - Firebase deshabilitado`);
+        /*
         await firebaseService.sendToUser(viaje.usuario_id, {
             title: '🕊️ Tu oferta fue aceptada',
             body: `${conductor.nombre_completo} ofrece S/. ${oferta.tarifa_propuesta} - Llega en ${tiempoLlegada} min`,
@@ -365,6 +374,7 @@ async notifyNearbyDrivers(drivers, viaje){
                 oferta_id: oferta.id
             }
         });
+        */
     
         // Actualizamos la oferta del viaje si es la primera oferta
         if(existingOffers === 0){
@@ -533,7 +543,9 @@ async acceptOffer(rideId, offerId, userId) {
                 });
             }
 
-            // Push notifications
+            // Push notifications - DESHABILITADO TEMPORALMENTE
+            console.log(`🚫 Push notification omitida para conductor ${oferta.conductor_id} - Firebase deshabilitado`);
+            /*
             await firebaseService.sendToDriver(oferta.conductor_id, {
                 title: '🎊 Oferta aceptada!!!',
                 body: `Tu oferta de S/. ${oferta.tarifa_propuesta} fue aceptada`,
@@ -542,6 +554,7 @@ async acceptOffer(rideId, offerId, userId) {
                     viaje_id: rideId
                 }
             });
+            */
 
         } catch (notificationError) {
             console.warn('⚠️ Error en notificaciones:', notificationError.message);
@@ -808,26 +821,55 @@ async checkUserActiveRides(userId){
             console.log(`   - Origen: ${activeRide.origen_direccion || `${activeRide.origen_lat}, ${activeRide.origen_lng}`}`);
             console.log(`   - Destino: ${activeRide.destino_direccion || `${activeRide.destino_lat}, ${activeRide.destino_lng}`}`);
             
-            // Si el viaje está en estado 'solicitado' por más de 10 minutos, lo cancelamos automáticamente
+            // Calcular tiempo transcurrido
             const tiempoTranscurrido = new Date() - new Date(activeRide.fecha_solicitud);
             const minutosTranscurridos = Math.floor(tiempoTranscurrido / (1000 * 60));
             
-            if (activeRide.estado === 'solicitado' && minutosTranscurridos > 10) {
-                console.log(`⏰ Auto-cancelando viaje ${activeRide.id} - ${minutosTranscurridos} minutos sin respuesta`);
+            // ✅ LÓGICA MEJORADA DE AUTO-CANCELACIÓN
+            let shouldCancel = false;
+            let cancelReason = '';
+            
+            if (activeRide.estado === 'solicitado' && minutosTranscurridos > 6) {
+                shouldCancel = true;
+                cancelReason = `Auto-cancelado por timeout - ${minutosTranscurridos} minutos sin ofertas`;
+            } else if (activeRide.estado === 'ofertas_recibidas' && minutosTranscurridos > 2) {
+                shouldCancel = true;
+                cancelReason = `Auto-cancelado - ${minutosTranscurridos} minutos sin aceptar ofertas`;
+            }
+            
+            if (shouldCancel) {
+                console.log(`⏰ Auto-cancelando viaje ${activeRide.id} - ${cancelReason}`);
                 
                 await activeRide.update({
                     estado: 'cancelado',
-                    motivo_cancelacion: `Auto-cancelado por timeout - ${minutosTranscurridos} minutos sin ofertas`,
+                    motivo_cancelacion: cancelReason,
                     cancelado_por: 'sistema_timeout_auto',
                     fecha_cancelacion: new Date()
                 });
+                
+                // Cancelar ofertas pendientes si las hay
+                if (activeRide.estado === 'ofertas_recibidas') {
+                    await OfertaViaje.update(
+                        { 
+                            estado: 'cancelada',
+                            fecha_cancelacion: new Date()
+                        },
+                        {
+                            where: {
+                                viaje_id: activeRide.id,
+                                estado: 'pendiente'
+                            }
+                        }
+                    );
+                }
                 
                 // Notificar al usuario
                 try {
                     websocketServer.notifyUser(userId, 'ride:auto_cancelled', {
                         viaje_id: activeRide.id,
                         motivo: 'Viaje cancelado automáticamente por inactividad',
-                        minutos_transcurridos: minutosTranscurridos
+                        minutos_transcurridos: minutosTranscurridos,
+                        puede_crear_nuevo: true
                     });
                 } catch (notificationError) {
                     console.warn('⚠️ Error enviando notificación de auto-cancelación:', notificationError.message);
@@ -837,7 +879,8 @@ async checkUserActiveRides(userId){
                 return; // Permitir crear nuevo viaje
             }
             
-            throw new ConflictError(`Ya tiene un viaje activo (${activeRide.estado}). ID: ${activeRide.id}. Puedes completar o cancelar el viaje actual`);
+            // Si el viaje no se puede auto-cancelar, lanzar error
+            throw new ConflictError(`Ya tiene un viaje activo (${activeRide.estado}). ID: ${activeRide.id}. Complete o cancele el viaje actual antes de crear uno nuevo.`);
         }
 }
      // calculadno la tarifaac base referencial
@@ -854,8 +897,6 @@ calculateArrivalTime(conductorLat, conductorLng, origenLat, origenLng){
         const timeHours = distance / 25;
         return Math.ceil(timeHours * 60);
 }
-
-
 
     setupRideTimeout(viajeId){
         console.log(`⏰ Configurando timeout de ${this.TIMEOUT_SECONDS} segundos para viaje ${viajeId}`);
@@ -881,7 +922,7 @@ calculateArrivalTime(conductorLat, conductorLng, origenLat, origenLng){
                         estado: 'cancelado',
                         motivo_cancelacion: 'Timeout - sin ofertas recividas en el tiempo límite',
                         cancelado_por: 'sistema_timeout',
-                        fecha_cancelacion: new Date() //
+                        fecha_cancelacion: new Date()
                     });
 
                     // Notificar al pasajero
@@ -892,7 +933,9 @@ calculateArrivalTime(conductorLat, conductorLng, origenLat, origenLng){
                         timeout_segundos: this.TIMEOUT_SECONDS
                     });
 
-                    // Push notification
+                    // Push notification - DESHABILITADO TEMPORALMENTE
+                    console.log(`🚫 Push notification de timeout omitida para usuario ${viaje.usuario_id} - Firebase deshabilitado`);
+                    /*
                     try {
                         await firebaseService.sendToUser(viaje.usuario_id, {
                             title: '⏰ Viaje sin ofertas',
@@ -905,6 +948,7 @@ calculateArrivalTime(conductorLat, conductorLng, origenLat, origenLng){
                     } catch (pushError) {
                         console.warn('⚠️ Error enviando push notification de timeout:', pushError.message);
                     }
+                    */
 
                     console.log(`✅ Viaje ${viajeId} cancelado por timeout`);
                     
@@ -912,785 +956,78 @@ calculateArrivalTime(conductorLat, conductorLng, origenLat, origenLng){
                     console.log(`✅ Viaje ${viajeId} ya tiene estado '${viaje.estado}' - no se cancela por timeout`);
                 }
 
-            } catch (error) { // ✅ CORREGIR: era "errorr"
+            } catch (error) {
                 console.error(`❌ Error en timeout del viaje ${viajeId}:`, error.message);
             }
         }, this.TIMEOUT_SECONDS * 1000); // Convertir a milisegundos
     }
 
-     async cancelRide(rideId, userId, motivo){
-        try{
-            console.log(`🙀 Cancelando el viaje ${rideId} por el pasajero ${userId}`);
-        
-            // Bucamo el biaje en BD y vemos si pertenece a este usuario
-            const viaje = await Viaje.findOne({
-                where: {
-                    id: rideId,
-                    usuario_id: userId
-                },
-                include: [
-                    {
-                        model: Usuario,
-                        as: 'pasajero',
-                        attributes: ['nombre_completo', 'telefono']
-                    },
-                    {
-                        model: Conductor,
-                        as: 'conductor',
-                        attributes: ['id', 'nombre_completo', 'telefono'],
-                        require: false
-                    }
-                ]
-            });
-            // pequeña validacion de la existencia del viaje
-            if(!viaje){
-                throw new NotFoundError("Viaje no econtrado o no autorizado"); 
-            }
-
-            // verificamos que el viaje se pueda cancelar excepto cuadno este en ruta
-            const estadosPermitidos = ['solicitado', 'ofertas_recibidas', 'aceptado'];
-            if(!estadosPermitidos.includes(viaje.estado)){
-                throw new ConflictError(`No se puede cancelar el viaje en estado: ${viaje.estado}`); 
-            }
-            
-            // usar transaction para garantizar la consistencia
-            const transaction = await Viaje.sequelize.transaction();
-            
-            const estadoOriginal = viaje.estado;
-
-            try {
-                // Actulizamos el viaje como cancelado
-                await viaje.update({
-                    estado: 'cancelado',
-                    motivo_cancelacion: motivo || 'Cancelado por el pasajero',
-                    cancelado_por: 'pasajero',
-                    fecha_cancelacion: new Date()
-                }, {transaction})
-                
-                // Si avìa ofertas pendientes asociadas a este viaje, marcamos como cancelado
-                if(['ofertas_recibidas', 'aceptado'].includes(estadoOriginal)){
-                    await OfertaViaje.update(
-                        {
-                            estado: 'cancelado',
-                            fecha_cancelacion: new Date()
-                        },
-                        {
-                            where: {
-                                viaje_id: rideId,
-                                estado: ['pendiente', 'aceptado']
-                            },
-                            transaction
-                        }
-                    );
-                }
-                await transaction.commit();
-                
-            } catch (transactionError) {
-                await transaction.rollback();
-                throw transactionError; 
-            }
-
-            // luego haremos las notificaciones correspondientes a pasajeros
-            try {
-                // si el viaje estaba aceptado notificar al conductor
-                if(estadoOriginal === 'aceptado' && viaje.conductor){
-
-                    // con websocket
-                    websocketServer.notifyDriver(viaje.conductor.id, 'ride:canceled_by_passenger', {
-                        viaje_idd: rideId,
-                        pasajero: {
-                            nombre: viaje.pasajero.nombre_completo,
-                            telefono: viaje.pasajero.telefono
-                        },
-                        motivo: motivo || 'Cancelado por el pasajero',
-                        timestamp: new Date()
-                    });
-
-                    // Push notifications con firebase
-
-                    await firebaseService.sendToDriver(viaje.conductor.id, {
-                        title: '😡 Viaje cacelado',
-                        body: `El pasajero ${viaje.pasajero.nombre_completo} cancelò el viaje`,
-                        data: {
-                            type: 'ride_cancelled',
-                            viaje_id: rideId,
-                            motivo: motivo || 'Cancelado por el pasajero'
-                        }
-                    });
-                }
-                if(estadoOriginal === 'ofertas_recibidas'){
-                    const ofertasPendientes = await OfertaViaje.findAll({
-                        where: {
-                            viaje_id: rideId,
-                            estado: 'cancelada'
-                        },
-                        attributes: ['conductor_id']
-                    });
-                    for (const oferta of ofertasPendientes){
-                        // websocket 
-                        websocketServer.notifyDriver(oferta.conductor_id, 'ride:cancelled_by_passenger', {
-                            viaje_id: rideId,
-                            mensaje: 'El pasajero cancelo la solitud de viaje'
-                        });
-
-                        // push notificatoins whit firebase
-                        await firebaseService.sendToDriver(oferta.conductor_id, {
-                            title: 'Solicitud cancelada',
-                            body: 'El pasajero cancelò la solicitud de viaje',
-                            data: {
-                                type: 'ride_cancelled',
-                                viaje_id: rideId
-                            }
-                        });
-                    }
-                }
-                
-            } catch (notificationError) {
-                console.warn(' ☢️ Error enviando notificacines de cancelacion:', notificationError.message)                
-            }
-            console.log(`✅ Viaje ${rideId} cancelado exitosamente`);
-
-            return {
-                viaje: {
-                    id: viaje.id,
-                    estado: 'cancelado',
-                    motivo_cancelacion: motivo || 'Cancelado  por el pasajero',
-                    fecha_cancelacion: new Date(),
-                    conductores_notificado: viaje.conductor ? true: false
-                },
-                mensaje: 'Viaje cancelado exitosamente'
-            };
-        }catch(error){
-            console.error(' ❌ Ocurrio un en cancelRide: ', error.message);
-            throw error;
-             
-        }
-     }
-
-     async rejectedOffer(rideId, offerId, userId){
+    /**
+     * ✅ ELIMINAR BÚSQUEDA ACTIVA - Elimina completamente las solicitudes pendientes
+     */
+    async deleteActiveSearch(userId) {
         try {
-            console.log(` 🙅‍♂️ Rechazando oferta ${offerId}, para viaje ${rideId}`);
-
-            // verificamos qeu el viaje pertenece al usuario
-            const viaje = await Viaje.findOne({
-                where: {
-                    id: rideId,
-                    usuario_id: userId
-                }
-            });
-
-            if(!viaje){
-                throw new NotFoundError("NO se econtraron viajes que cancelar"); 
-            }
-
-            // verificaamos que la oferta solo este en estado ofertas recividas
-            if(!['ofertas_recibidas'].includes(viaje.estado)){
-                throw new ConflictError("No se puede rechazr ofertas si la ofeta no esta en estado {ofertas_recibidas}");         
-            }
+            console.log(`🗑️ Eliminando búsqueda activa para usuario ${userId}`);
             
-            // buscamso las ofertas a cancelar
-            const oferta = await OfertaViaje.findOne({
-                where: {
-                    id: offerId,
-                    viaje_id: rideId,
-                    estado: 'pendiente'
-                },
-                include: [{
-                    model: Conductor,
-                    as: 'conductor',
-                    attributes: ['id', 'nombre_completo']
-                }]
-            });
-            if(!oferta){
-                throw new NotFoundError("Ofert no econtada o ya no esta diponible"); 
-            }
-
-            // una vez encontrada, actulizamos la oferta como rezada
-            await oferta.update({
-                estado: 'rechazada',
-                fecha_rechazo: new Date()
-            });
-
-            // verificamos si todavìa hay ofertar aparte de lo qeu se rechazo ahora
-            const ofertasPendientes = await OfertaViaje.count({
-                where: {
-                    viaje_id: rideId,
-                    estado: 'pendiente'
-                }
-            });
-
-            // si no hay ofertas, cabiamos el estado del viaje en solicitado par que otros conductores puedan seguir ofertar
-           if (ofertasPendientes === 0){
-            await Viaje.update({
-                estado: 'solicitado'
-            });
-           }
-
-           // notificamos al conductor rechazada
-
-          try {
-            // Con websocket
-            websocketServer.notifyDriver(oferta.conductor_id, 'ride:offer_rejected', {
-                viaje_id: rideId,
-                oferta_id: offerId,
-                message: 'Tu Oferta fue rechazada por el pasajero'
-            });
-
-            // con push notifications
-            await firebaseService.sendToDriver(oferta.conductor_id, {
-                title: '😡 Oferta rechazada',
-                body: 'El pasajero rechazò tu oferta',
-                data: {
-                    type: 'offer_rejected',
-                    viaje_id: rideId,
-                    oferta_id: offerId
-                }
-            });
-            
-           } catch (notificationError) {
-                console.warn(' ☢️ Error enviado notificaiones al conducto rechazada: ', notificationError.message) 
-           }
-           console.log(`✅ Oferta ${offerId} rechazada`);
-
-           return {
-            oferta: {
-                id: offerId,
-                estado: 'rechazada',
-                conductor: oferta.conductor.nombre_completo
-            },
-            viaje: {
-                id: rideId,
-                ofertas_pendientes: ofertasPendientes,
-                estado: ofertasPendientes > 0 ? 'ofertas_recibidas': 'solicitado' 
-            },
-           };
-
-
-        } catch (error) {
-            console.error('❌ Error rechazada oferta: ', error.message) 
-        }
-     }
-
-     async getRideStatus(rideId, userId){
-        try {
-            console.log(`Consultando estado del viaje ${rideId}`);
-            const viaje = await Viaje.findOne({
-                where: {
-                    id: rideId,
-                    usuario_id: userId
-                },
-                include: [
-                    {
-                        model: Usuario,
-                        as: 'pasajero',
-                        attributes: ['nombre_completo', 'telefono']
-                    },
-                    {
-                        model: Conductor,
-                        as: 'conductor',
-                        attributes: ['id', 'nombre_completo', 'telefono', 'ubicacion_lat', 'ubicacion_lng'],
-                        required: false,
-                        include: [{
-                            mode: Vehiculo,
-                            as: 'vehiculos',
-                            where: {active: true},
-                            required: false,
-                            attributes: ['placa', 'marca', 'modelo', 'color']
-                        }]
-                    },
-                    {
-                        model: OfertaViaje,
-                        as: 'ofertas',
-                        where: {estado: ['pendiente', 'aceptada']},
-                        required: false,
-                        include: [{
-                            model: Conductor,
-                            as: 'conductor',
-                            attributes: ['nombre_completo']
-                        }]
-                    }
-                ]
-            });
-
-            // pequeña validacion 
-            if(!viaje){
-                throw new NotFoundError('Viaje no econtrado');
-            }
-
-            const response = {
-                viaje: {
-                    id: viaje.id,
-                    estado: viaje.estado,
-                    origin: {
-                        lat: viaje.origen_lat,
-                        lng: viaje.origen_lng,
-                        direccion: viaje.origen_direccion
-                    },
-                    destino: {
-                        lat: viaje.destino_lat,
-                        lng: viaje.destino_lng,
-                        direccion: viaje.destino_direccion
-                    },
-                    
-                    distancia_km: viaje.distancia_km,
-                        precio_sugerido: viaje.precio_sugerido,
-                        tarifa_acordada: viaje.tarifa_acordada,
-                        fecha_solicitud: viaje.fecha_solicitud,
-                        fecha_aceptacion: viaje.fecha_aceptacion,
-                        fecha_cancelacion: viaje.fecha_cancelacion,
-                        motivo_cancelacion: viaje.motivo_cancelacion
-                }
-            };
-
-            // informamos al conductro de acerdo al estado del viaje
-            switch(viaje.estado){
-                case 'solicitado':
-                    response.mensaje = 'Acualmente buscando conductores disponibles...';
-                    response.ofertas_recibidas = 0;
-                    break;
-                case 'ofertas_recibidas':
-                    response.mensaje = 'Actuamente tienes ofertas recividas paa tu viaje';
-                    response.ofertas_pendientes = viaje.ofertas || [],
-                    response.total_ofertas = viaje.ofertas?.length || 0;
-                    break;
-                case 'aceptado':
-                case 'en_curso':
-                    if(viaje.conductor){
-                        response.conductor = {
-                            id: viaje.conductor.nombre_completo,
-                            nombre: viaje.conductor.nombre_completo,
-                            telefono: viaje.conductor.telefono,
-                            ubicacion_actual: {
-                                lat: viaje.conductor.ubicacion_lat,
-                                lng: viaje.conductor.ubicacion_lng
-                            },
-                            vehiculo : viaje.conductor.vehiculos?.[0] || null
-                        };
-                    }
-                    response.mensaje = viaje.estado == 'aceptado'
-                    ? 'El conductor se dirige hacìa tì'
-                    : 'Viaje en curso';
-                    break;
-                case 'completado':
-                    response.mensaje = 'Viaje completado exitosamente';
-                    response.tarifa_final = viaje.tarifa_acordada;
-                    break;
-                case 'cancelado':
-                    response.mensaje = `Vija cancelado por: ${viaje.motivo_cancelacion} `;
-                    break;
-                default:
-                    response.mensaje = `Estado; ${viaje.estado}`;
-            }
-            return response;
-        } catch (error) {
-           console.error(' ❌ Error obteniendo estado del viaje', error.message) 
-        }
-     }
-
-     async getActiveRides(userId){
-        try {
-            console.log(`Obteniendo viajes activos para usuario ${userId}`);
-            
-            const activaRides = await Viaje.findAll({
+            // Buscar solicitudes pendientes del usuario
+            const activeRides = await Viaje.findAll({
                 where: {
                     usuario_id: userId,
-                    estado: ['solicitado', 'ofertas_recibidas', 'aceptado', 'en_curso']
-                },
-                include: [
-                    {
-                        model: Conductor,
-                        as: 'conductor',
-                        attributes: ['id', 'nombre_completo', 'telefono'],
-                        required: false,
-                        include: [{
-                            model: Vehiculo,
-                            as: 'vehiculos',
-                            where: {activo: true},
-                            required: false,
-                            attributes: ['placa', 'marca', 'modelo', 'color']
-                        }]
-                    },
-                    {
-                        mode: OfertaViaje,
-                        as: 'ofertas',
-                        where: [{estado: 'activo'}],
-                        required: false,
-                        attributes: ['id', 'tarifa_propuesta', 'tiempo_estimado_llegada_minutos'],
-                        include: [{
-                            model: Conductor,
-                            as: 'conductor',
-                            attributes: ['nombre_completo']
-                        }]
-                    }
-                ],
-                order: [['fecha_solicitud', 'DESC']]
-            })
-            return activaRides.map(viaje => ({
-                id: viaje.id,
-                estado: viaje.estado,
-                origin: {
-                    lat: viaje.origen_lat,
-                    lng: viaje.origen_lng,
-                    direccion: viaje.origen_direccion
-                },
-                destino: {
-                    lat: viaje.destino_lat,
-                    lng: viaje.destino_lng,
-                    destino_direccion: viaje.destino_direccion
-                },
-                distancia_km: viaje.distancia_km,
-                precio_sugerido: viaje.precio_sugerido,
-                tarifa_acordada: viaje.tarifa_acordada,
-                fecha_solicitud: viaje.fecha_solicitud,
-                conductor: viaje.conductor ? {
-                    id: viaje.conductor.id,
-                    nombre: viaje.conductor.nombre_completo,
-                    telefno: viaje.conductor.telefono,
-                    vehiculo: viaje.conductor.vehiculos?.[0] || null
-                } : null,
-                ofertas_pendientes: viaje.ofertas?.length || 0
-            }));
-        } catch (error) {
-            console.error('❌ Erro obteneindo viajes activos: ', error.message);
-            throw error;
-             
-        }
-     }
-
-     /**
-    *   Cremos la contraoferta solo para el pasajero
-    */
-     async createCounterOffer(rideId, userId, counterOfferData){
-        try {
-            const {nuevo_precio, mensaje} = counterOfferData;
-            console.log(`Creando contraoferta para viaje ${rideId}: S/. ${nuevo_precio}`);
-
-            // verificamos y traemos el viaje existente para para pasajero
-
-            const viaje = await Viaje.findOne({
-                where: {
-                    id: rideId,
-                    usuario_id: userId
-                },
-                include: [{
-                    model: Usuario,
-                    as: 'pasajero',
-                    attributes: ['nombre_completo', 'telefono']
-                }]
+                    estado: ['solicitado', 'ofertas_recibidas']
+                }
             });
 
-            // pequeña validacion
-            if(!viaje){
-                throw new NotFoundError("Viaje no econtrado"); 
+            if (activeRides.length === 0) {
+                console.log(`ℹ️ No hay solicitudes activas para eliminar del usuario ${userId}`);
+                return { deletedCount: 0 };
             }
 
-            console.log(`🐛 DEBUG: Estado actual del viaje: "${viaje.estado}"`);
+            let deletedCount = 0;
 
-            // Verificamos el estado del viaje
-            if(!['ofertas_recibidas'].includes(viaje.estado)){
-                throw new ConflictError("No se puede crear contraofertas por que ya ofertaste"); 
-            }
-           
-            // actulizamos el precio sugerido con el nuevo precio ofertado
-            await viaje.update({
-                precio_sugerido: nuevo_precio,
-                fecha_contraoferta: new Date()
-            })
-
-            // Obtenemo todos los conductores que hicieron la oferta
-            const conductoresConOfertas = await OfertaViaje.findAll({
-                where:{
-                    viaje_id: rideId,
-                    estado: 'pendiente'
-                },
-                include: [{
-                    model: Conductor,
-                    as: 'conductor',
-                    attributes: ['id', 'nombre_completo']
-                }]
-            });
-            
-            // 📣 Notificamos sobre la contraoferta
-            //  a todos los conductores que ofertaron para ese viaje
-
-            const notificationData = {
-                viaje_id: rideId,
-                nuevo_precio: nuevo_precio,
-                mensaje: mensaje || 'El pasajero hizo una nueva contraoferta',
-                pasajero: {
-                    nombre: viaje.pasajero.nombre_completo
-                },
-                expira_en: 300 // 5 minutos
-            };
+            // Usar transacción para eliminar todo de forma atómica
+            const transaction = await Viaje.sequelize.transaction();
 
             try {
-                for (const oferta of conductoresConOfertas){
-                    // con websokcet
-                    websocketServer.notifyDriver(oferta.conductor.id, 'ride:counter_offer', notificationData);
-
-                    // con Push notificatons
-
-                    await firebaseService.sendToDriver(oferta.conductor.id, {
-                        title: ' 💡 Contraoferta recibida',
-                        body:`Nuevo precio sugerido: S/. ${nuevo_precio}`,
-                        data: {
-                            type: 'counter_offer',
-                            viaje_id: rideId,
-                            nuevo_precio: nuevo_precio.toString()
-                        }
+                for (const viaje of activeRides) {
+                    console.log(`🗑️ Eliminando viaje ${viaje.id} y sus ofertas...`);
+                    
+                    // Eliminar ofertas relacionadas primero
+                    await OfertaViaje.destroy({
+                        where: { viaje_id: viaje.id },
+                        transaction
                     });
+
+                    // Eliminar el viaje
+                    await viaje.destroy({ transaction });
+                    
+                    // Notificar a conductores que tenían ofertas pendientes
+                    try {
+                        websocketServer.notifyDrivers('ride:cancelled_by_user', {
+                            viaje_id: viaje.id,
+                            mensaje: 'El usuario canceló la búsqueda'
+                        });
+                    } catch (notificationError) {
+                        console.warn('⚠️ Error notificando cancelación:', notificationError.message);
+                    }
+
+                    deletedCount++;
                 }
-            } catch (notificationError) {
-                console.warn(' ☢️ Error enviadno notificaones de contraoferta: ', notificationError.message);
+
+                await transaction.commit();
+                console.log(`✅ Eliminadas ${deletedCount} solicitudes del usuario ${userId}`);
+
+                return { deletedCount };
+
+            } catch (transactionError) {
+                await transaction.rollback();
+                throw transactionError;
             }
 
-            console.log(`✅ Contraaoferta creada: S/. ${nuevo_precio}`);
-            
-            return {
-                viaje: {
-                    id: rideId,
-                    nuevo_precio: nuevo_precio,
-                    mensaje: mensaje,
-                    conductores_notificados: conductoresConOfertas.length
-                },
-                mensaje: 'Contraoferta enviada a todos los cudntores posibles'
-            }; 
         } catch (error) {
-            console.error('❌ Error creando contraorferta: ', error.message);
+            console.error('❌ Error eliminando búsqueda activa:', error.message);
             throw error;
-             
         }
-     }
-
-     /**
-     * ✅ CONDUCTOR ACEPTA CONTRAOFERTA DEL PASAJERO
-     */
-     async acceptDriverCounterOffer(offerId, conductorId){
-        try {
-            console.log(`✅ Conductor ${conductorId}  acepta la contraofert para la oferta de ${offerId}`);
-
-            // buscar la oferta y el viaje
-            const oferta = await OfertaViaje.findOne({
-                where: {
-                    id: offerId,
-                    conductor_id: conductorId,
-                    estado: 'pendiente'
-                },
-                include: [{
-                    model: Viaje,
-                    as: 'viaje',
-                    include: [{
-                        model: Usuario,
-                        as: 'pasajero',
-                        attributes: ['id', 'nombre_completo', 'telefono']
-                    }]
-                }]
-            });
-
-            // peuqeña validacio
-            if(!oferta){
-                throw new NotFoundError('Oferta no encontrada  para pode aceptar');
-            }
-            const viaje = oferta.viaje;
-
-            if(!viaje.fecha_contraoferta){
-                throw new NotFoundError('NO hay oferta para que puedas acpetar');
-            }
-
-            // actualizamos la oferta con el nuevo precio contraofertado
-            await oferta.update({
-                tarifa_propuesta: viaje.precio_sugerido, // este el precio de la contraofer del pasajero
-                mensaje: `Acepto tu contraoferta de S/. ${viaje.precio_sugerido}`,
-                fecha_contraoferta_aceptada: new Date()
-            });
-
-                // Notificar al pasajero
-            const notificationData = {
-            oferta_id: offerId,
-            viaje_id: viaje.id,
-            conductor: {
-                id: conductorId,
-                nombre: oferta.conductor?.nombre_completo
-            },
-            tarifa_acordada: viaje.precio_sugerido,
-            mensaje: `¡El conductor aceptó tu contraoferta de S/. ${viaje.precio_sugerido}!`
-            };
-
-            // WebSocket
-            websocketServer.notifyUser(viaje.usuario_id, 'ride:counter_offer_accepted', notificationData);
-
-            // Push notification
-            await firebaseService.sendToUser(viaje.usuario_id, {
-            title: '🎉 Contraoferta Aceptada',
-            body: `El conductor aceptó tu precio de S/. ${viaje.precio_sugerido}`,
-            data: {
-                type: 'counter_offer_accepted',
-                viaje_id: viaje.id,
-                oferta_id: offerId
-            }
-            });
-
-            return {
-            oferta: {
-                id: offerId,
-                tarifa_acordada: viaje.precio_sugerido,
-                estado: 'pendiente_aceptacion_pasajero'
-            },
-            mensaje: 'Contraoferta aceptada. Esperando confirmación del pasajero.'
-            };
-            
-            
-        } catch (error) {
-            console.error('❌ Error acpetando contraoferta: ', error.message);     
-        }
-     }
-
-     /**
- * ✅ CONDUCTOR RECHAZA CONTRAOFERTA DEL PASAJERO
-    */
-
-     async rejecDriverCounterOffer(offerId, conductorId, motivo){
-        try {
-            console.log(`❌ Conductor ${conductorId} rechaza contraoferta para oferta  ${offerId}` );
-
-            const oferta = await OfertaViaje.findOne({
-                where: {
-                    id: offerId,
-                    conductor_id: conductorId,
-                    estaod: 'pendiente'
-                },
-                include: [{
-                    model: Viaje,
-                    as: 'viaje',
-                    include: [{
-                        model: Usuario,
-                        as: 'pasajero'
-                    }]
-                }]
-            });
-
-            if(!oferta){
-                throw new NotFoundError("No s encontro la oferta que esta rechazada"); 
-            }
-
-            // maercamo coo rechazada
-            await oferta.update({
-                estado: 'rechazada',
-                motivo_rechazo: motivo || 'Cotraoferta rechazada por el conductor',
-                fecha_rechazo: new Date()
-            });
-
-            // notificamos al psajero del rechazo
-            websocketServer.notifyUser(oferta.viaje.usuario_id, 'ride:counter_offer_rejected', {
-                oferta_id: offerId,
-                viaje_id: oferta.viaje.id,
-                motivo: motivo || 'El conductor recahzò tu contraoferta'
-            });
-
-            return {
-                oferta: {
-                    id: offerId,
-                    estado: 'rechazad',
-                    motivo: motivo
-                }
-            }; 
-        } catch (error) {
-            console.error('❌ Erro rechaznado contraofertas: ', error.message);
-            throw error 
-        }
-     }
-
-     /**
-     * ✅ CONDUCTOR CREA CONTRAOFERTA - cuando el user ofrece y este quiere contraofertar
-     */
-
-     async createDriverCounterOffer(offerId, conductorId, counterData){
-        try {
-            const {nueva_tarifa, mensaje} = counterData;
-            console.log(`🚕 Conducto ${conductorId} contraoferta con S/. ${nueva_tarifa}`);
-            
-            // buscamos la contraoferta al que se a actulizar con el nuevo prcio
-            const oferta = await OfertaViaje.findOne({
-                where: {
-                    id: offerId,
-                    conductor_id: conductorId,
-                    estado: 'pendiente'
-                },
-                include: [{
-                    model: Viaje,
-                    as: 'viaje',
-                    include: [{
-                        model: Usuario,
-                        as: 'pasajero'
-                    }],
-                },{
-                    model: Conductor,
-                    as: 'conductor',
-                    attributes: ['nombre_completo']
-                }]
-            });
-
-            if(!oferta){
-                throw new NotFoundError('No se econtro la ofert que creaste como conductor');
-            }
-
-            // actualizamos la oferta con la nueva tarifa
-            await oferta.update({
-                tarifa_propuesta: nueva_tarifa,
-                mensaje: mensaje,
-                fecha_contraoferta_conductor: new Date()
-            });
-
-            // Notificamos al pasajero
-
-            const notificationData = {
-                oferta_id: offerId,
-                viaje_id: oferta.viaje.id,
-                conductor: {
-                    id: conductorId,
-                    nombre: oferta.conductor.nombre_completo
-                },
-                nueva_tarifa: nueva_tarifa,
-                mensaje: mensaje,
-                tipo: 'contraoferta_conductor'
-            };
-            //con websocket
-            websocketServer.notifyUser(oferta.viaje.usuario_id, 'ride:driver_counter_offer',  notificationData);
-
-            // connotificaciones push
-
-            await firebaseService.sendToUser(oferta.viaje.usuario_id, {
-                title: `💸 Nueva contraoferta`,
-                boyd: `${oferta.conductor.nombre_completo} propone S/. ${nueva_tarifa} `,
-                data: {
-                    type: 'driver_counter_offer',
-                    viaje_id: oferta.viaje_id,
-                    oferta_id: offerId,
-                    nueva_tarifa: nueva_tarifa.toString()
-                }
-            });
-
-            return {
-                oferta: {
-                    id: offerId,
-                    nueva_tarifa: nueva_tarifa,
-                    mensaje: mensaje,
-                    conductor: oferta.conductor.nombre_completo,
-                },
-                mensaje: 'Contraoferta envida al pasajero'
-            }; 
-        } catch (error) {
-            console.error('❌ No se pudo crear un nueva contraofert por parte dle conductor', error.message);
-            throw error;
-            
-            
-        }
-     }
-
-     
-
-
-
+    }
 }
 
 module.exports = new RidesService();

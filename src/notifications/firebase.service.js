@@ -40,7 +40,7 @@ class FirebaseService {
    */
   async sendToUser(userId, notification) {
     try {
-      console.log(`📱 Enviando push a usuario ${userId}: ${notification.title}`);
+      console.log(`� Enviando push a usuario ${userId}: ${notification.title}`);
 
       if (!this.initialized) {
         throw new Error('Firebase no está inicializado correctamente');
@@ -119,7 +119,7 @@ class FirebaseService {
    */
   async sendToDriver(conductorId, notification) {
     try {
-      console.log(`📱 Enviando push a conductor ${conductorId}: ${notification.title}`);
+      console.log(`� Enviando push a conductor ${conductorId}: ${notification.title}`);
 
       if (!this.initialized) {
         throw new Error('Firebase no está inicializado correctamente');

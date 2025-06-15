@@ -184,10 +184,9 @@ class ConductorAuthController {
       console.error('❌ Stack:', error.stack);
       res.status(401).json({
         success: false,
-        message: 'No se puedo tenticarla al usaurio',
-        required: `Los campos requiridos son: ${error.message}`
-      })
-      throw err;
+        message: 'No se pudo autenticar al usuario',
+        error: error.message
+      });
     }
   }
 
@@ -446,48 +445,67 @@ class ConductorAuthController {
         });
       }
 
-      // Si se activa, coordenadas son requeridas para ubicación inicial
-      if (disponible && (!lat || !lng)) {
-        return res.status(400).json({
-          success: false,
-          message: 'Coordenadas requeridas al activar disponibilidad',
-          ejemplo: { 
-            disponible: true, 
-            lat: -12.0464, 
-            lng: -77.0428 
-          }
-        });
-      }
+      // Las coordenadas son opcionales
+      // El conductor puede activar disponibilidad sin coordenadas
 
       const result = await conductorAuthService.updateAvailability(conductorId, disponible, disponible ? {lat, lng}: null);
 
-      // si esta activa inicialiar en Redis para aparecer en busqueda
+      // ✅ USAR EL NUEVO SERVICIO DE UBICACIÓN DEL CONDUCTOR
       if(disponible && lat && lng){
-        const locationService = require('../rides/location.service');
-        await  locationService.initializeDriverLocation(conductorId, lat, lng);
-        
+        try {
+          const driverLocationService = require('../rides/driver-location.service');
+          await driverLocationService.startLocationUpdates(conductorId, lat, lng);
+          console.log(`✅ Conductor ${conductorId} inicializado para actualizaciones automáticas`);
+        } catch (redisError) {
+          console.warn(`⚠️ Error inicializando actualizaciones automáticas: ${redisError.message}`);
+          // Fallback al servicio básico
+          try {
+            const locationService = require('../rides/location.service');
+            await locationService.initializeDriverLocation(conductorId, lat, lng);
+            console.log(`✅ Conductor ${conductorId} inicializado en Redis (fallback)`);
+          } catch (fallbackError) {
+            console.warn(`⚠️ Error en fallback Redis: ${fallbackError.message}`);
+          }
+        }
       }
-      if(!disponible){
-        const locationService = require('../rides/location.service');
-        await locationService.deactivateDriver(conductorId);
       
+      if(!disponible){
+        try {
+          const driverLocationService = require('../rides/driver-location.service');
+          await driverLocationService.stopLocationUpdates(conductorId);
+          console.log(`✅ Conductor ${conductorId} desactivado de actualizaciones automáticas`);
+        } catch (redisError) {
+          console.warn(`⚠️ Error desactivando actualizaciones: ${redisError.message}`);
+          // Fallback al servicio básico
+          try {
+            const locationService = require('../rides/location.service');
+            await locationService.deactivateDriver(conductorId);
+            console.log(`✅ Conductor ${conductorId} desactivado de Redis (fallback)`);
+          } catch (fallbackError) {
+            console.warn(`⚠️ Error en fallback desactivación: ${fallbackError.message}`);
+          }
+        }
       }
 
       res.status(200).json({
         success: true,
-        message: disponible ? 'Disonibilidad activada': 'Disponibilidad desactivada',
+        message: disponible ? 'Disponibilidad activada': 'Disponibilidad desactivada',
         data: {
           conductor_id: conductorId,
           disponible: disponible,
           ubicacion_inicial: disponible ? {lat, lng} : null,
           siguiente_paso: disponible
-          ? 'Envìa actualizaciones de ubicaciòn a api/rides/driver/location'
-          : 'Conductor desactivado de bùsquedas'
+          ? 'Envía actualizaciones de ubicación a /api/rides/driver/location'
+          : 'Conductor desactivado de búsquedas'
         }
       });
     } catch (error) {
       console.error('❌ Error actualizando disponibilidad:', error.message);
-      this.handleError(res, error);
+      res.status(500).json({
+        success: false,
+        message: 'Error actualizando disponibilidad',
+        error: error.message
+      });
     }
   }
 

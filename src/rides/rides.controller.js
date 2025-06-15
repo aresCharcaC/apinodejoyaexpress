@@ -200,6 +200,38 @@ class RidesController{
       });
     }
   }
+
+  /**
+   * ✅ DELETE /api/rides/cancel-and-delete - Cancelar y eliminar búsqueda de conductor
+   * Elimina completamente la solicitud, no la guarda como cancelada
+   */
+  async cancelAndDeleteSearch(req, res) {
+    try {
+      const userId = req.user.id;
+      
+      console.log(`🗑️ Usuario ${userId} cancela y elimina búsqueda de conductor`);
+      
+      // Buscar y eliminar solicitudes pendientes del usuario
+      const result = await ridesService.deleteActiveSearch(userId);
+      
+      res.status(200).json({
+        success: true,
+        message: 'Búsqueda eliminada exitosamente',
+        data: {
+          deleted_requests: result.deletedCount,
+          message: 'Solicitudes eliminadas completamente de la base de datos'
+        }
+      });
+      
+    } catch (error) {
+      console.error('❌ Error en cancelAndDeleteSearch:', error.message);
+      return res.status(500).json({
+        success: false,
+        message: 'Error interno del servidor',
+        error: error.message
+      });
+    }
+  }
 /**
    * ✅ GET /api/rides/:rideId/status - Estado del viaje por usuario
    */
@@ -252,100 +284,105 @@ class RidesController{
 
   /**
    * PUT /api/rides/driver/location - Actualizar ubicación conductor (tiempo real)
- * SOLO PARA CONDUCTORES - Llamado cada 5-10 segundos desde Flutte
+   * SOLO PARA CONDUCTORES - Llamado cada 5 segundos desde Flutter
    */
-
   async updateDriverLocation(req, res) {
-  try {
-    console.log(`📍 Actualizando ubicación para conductor: ${req.user.conductorId}`);
-    console.log('Nueva ubicación:', req.body);
+    try {
+      console.log(`📍 Actualizando ubicación para conductor: ${req.user.conductorId}`);
+      console.log('Nueva ubicación:', req.body);
 
-    const conductorId = req.user.conductorId;
-    const { lat, lng } = req.body;
+      const conductorId = req.user.conductorId;
+      const { lat, lng } = req.body;
 
-    if (typeof lat !== 'number' || typeof lng !== 'number') {
-      return res.status(400).json({
-        success: false,
-        message: 'Latitud y longitud son requeridas como números',
-        ejemplo: { lat: -12.0464, lng: -77.0428 }
+      // ✅ VALIDACIONES MEJORADAS
+      if (typeof lat !== 'number' || typeof lng !== 'number') {
+        return res.status(400).json({
+          success: false,
+          message: 'Latitud y longitud son requeridas como números',
+          ejemplo: { lat: -12.0464, lng: -77.0428 },
+          recibido: { lat: typeof lat, lng: typeof lng }
+        });
+      }
+
+      if (lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+        return res.status(400).json({
+          success: false,
+          message: 'Coordenadas inválidas',
+          validacion: 'lat: -90 a 90, lng: -180 a 180',
+          recibido: { lat, lng }
+        });
+      }
+
+      // Verificar si el conductor está activo y disponible
+      const conductor = await Conductor.findByPk(conductorId, {
+        attributes: ['id', 'estado', 'disponible']
       });
-    }
 
-    if (lat < -90 || lat > 90 || lng < -180 || lng > 180) {
-      return res.status(400).json({
-        success: false,
-        message: 'Coordenadas inválidas',
-        validacion: 'lat: -90 a 90, lng: -180 a 180'
-      });
-    }
+      if (!conductor) {
+        return res.status(404).json({
+          success: false,
+          message: 'Conductor no encontrado'
+        });
+      }
 
-    // Verificar si el conductor está activo y disponible
-    const conductor = await Conductor.findByPk(conductorId, {
-      attributes: ['id', 'estado', 'disponible']
-    });
+      if (conductor.estado !== 'activo' || !conductor.disponible) {
+        return res.status(403).json({
+          success: false,
+          message: 'Conductor no está disponible para enviar ubicación',
+          estado_actual: {
+            estado: conductor.estado,
+            disponible: conductor.disponible
+          },
+          accion_requerida: 'Activar disponibilidad en /api/conductor-auth/availability'
+        });
+      }
 
-    if (!conductor) {
-      return res.status(404).json({
-        success: false,
-        message: 'Conductor no encontrado'
-      });
-    }
+      // ✅ USAR EL NUEVO SERVICIO DE UBICACIÓN DEL CONDUCTOR
+      const driverLocationService = require('./driver-location.service');
+      const result = await driverLocationService.updateDriverLocation(conductorId, lat, lng);
 
-    if (conductor.estado !== 'activo' || !conductor.disponible) {
-      return res.status(403).json({
-        success: false,
-        message: 'Conductor no está disponible para enviar ubicación',
-        estado_actual: {
-          estado: conductor.estado,
-          disponible: conductor.disponible
+      console.log(`✅ Ubicación actualizada: ${lat}, ${lng}`);
+
+      res.status(200).json({
+        success: true,
+        message: 'Ubicación actualizada correctamente',
+        data: {
+          conductor_id: conductorId,
+          coordenadas: { lat, lng },
+          timestamp: result.timestamp,
+          location_updated: result.location_updated,
+          next_update_in_seconds: result.next_update_in_seconds || 5,
+          redis_status: result.redis_failed ? 'failed' : 'ok'
         }
       });
-    }
 
-    // ✅ AQUÍ ESTABA EL PROBLEMA - FALTABA ESTA PARTE:
-    // Actualizar la ubicación en Redis y Postgres
-    const result = await locationService.updateDriverLocation(conductorId, lat, lng);
+    } catch (error) {
+      console.error('❌ Error en updateDriverLocation:', error.message);
 
-    console.log(`✅ Ubicación actualizada: ${lat}, ${lng}`);
-
-    res.status(200).json({
-      success: true,
-      message: 'Ubicación actualizada correctamente',
-      data: {
-        conductor_id: conductorId,
-        coordenadas: { lat, lng },
-        timestamp: result.timestamp,
-        ttl_segundos: result.ttl,
-        en_redis: true
+      if (error.message.includes('Redis no disponible')) {
+        return res.status(503).json({
+          success: false,
+          message: 'Servicio de ubicación temporalmente no disponible',
+          type: 'service_unavailable',
+          fallback: 'Usando solo PostgreSQL'
+        });
       }
-    });
 
-  } catch (error) {
-    console.error('❌ Error en updateDriverLocation:', error.message);
+      if (error.message.includes('no está activo')) {
+        return res.status(403).json({
+          success: false,
+          message: error.message,
+          type: 'driver_inactive'
+        });
+      }
 
-    if (error.message.includes('Redis no disponible')) {
-      return res.status(503).json({
+      return res.status(500).json({
         success: false,
-        message: 'Servicio de ubicación temporalmente no disponible',
-        type: 'service_unavailable'
+        message: 'Error interno del servidor',
+        error: error.message
       });
     }
-
-    if (error.message.includes('no está activo')) {
-      return res.status(403).json({
-        success: false,
-        message: error.message,
-        type: 'driver_inactive'
-      });
-    }
-
-    return res.status(500).json({
-      success: false,
-      message: 'Error interno del servidor',
-      error: error.message
-    });
   }
-}
 
 
 /**
@@ -740,6 +777,87 @@ async createDriverCounterOffer(req, res){
     })
   }
 }
+
+  /**
+   * ✅ GET /api/rides/driver/stats - Estadísticas del servicio de ubicación
+   */
+  async getDriverLocationStats(req, res) {
+    try {
+      const driverLocationService = require('./driver-location.service');
+      const stats = driverLocationService.getStats();
+      
+      res.status(200).json({
+        success: true,
+        data: stats
+      });
+    } catch (error) {
+      console.error('❌ Error obteniendo estadísticas:', error.message);
+      res.status(500).json({
+        success: false,
+        message: 'Error obteniendo estadísticas',
+        error: error.message
+      });
+    }
+  }
+
+  /**
+   * ✅ POST /api/rides/driver/start-location - Inicializar actualizaciones de ubicación
+   */
+  async startDriverLocationUpdates(req, res) {
+    try {
+      const conductorId = req.user.conductorId;
+      const { lat, lng } = req.body;
+
+      if (typeof lat !== 'number' || typeof lng !== 'number') {
+        return res.status(400).json({
+          success: false,
+          message: 'Latitud y longitud son requeridas como números',
+          ejemplo: { lat: -12.0464, lng: -77.0428 }
+        });
+      }
+
+      const driverLocationService = require('./driver-location.service');
+      const result = await driverLocationService.startLocationUpdates(conductorId, lat, lng);
+
+      res.status(200).json({
+        success: true,
+        message: 'Actualizaciones de ubicación iniciadas',
+        data: result
+      });
+    } catch (error) {
+      console.error('❌ Error iniciando actualizaciones:', error.message);
+      res.status(500).json({
+        success: false,
+        message: 'Error iniciando actualizaciones de ubicación',
+        error: error.message
+      });
+    }
+  }
+
+  /**
+   * ✅ POST /api/rides/driver/stop-location - Detener actualizaciones de ubicación
+   */
+  async stopDriverLocationUpdates(req, res) {
+    try {
+      const conductorId = req.user.conductorId;
+      
+      const driverLocationService = require('./driver-location.service');
+      const result = await driverLocationService.stopLocationUpdates(conductorId);
+
+      res.status(200).json({
+        success: true,
+        message: 'Actualizaciones de ubicación detenidas',
+        data: result
+      });
+    } catch (error) {
+      console.error('❌ Error deteniendo actualizaciones:', error.message);
+      res.status(500).json({
+        success: false,
+        message: 'Error deteniendo actualizaciones de ubicación',
+        error: error.message
+      });
+    }
+  }
 
   /**
    * ✅ Manejo centralizado de errores
