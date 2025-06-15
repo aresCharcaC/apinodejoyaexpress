@@ -26,6 +26,18 @@ class RidesController{
         console.log(`👮‍♂️ userId: ${userId}  rideData: ${rideData}`)
         // creamos la solicitud de viaje 
         const result = await ridesService.createRideRequest(userId, value);
+        
+        // Si no hay conductores disponibles, devolvemos un estado específico
+        if (result.success === false) {
+            return res.status(200).json({
+                success: false,
+                message: result.mensaje,
+                data: result,
+                tipo: 'no_drivers_available'
+            });
+        }
+        
+        // Si todo está bien, devolvemos éxito
         res.status(201).json({
             success: true,
             message: 'Solicitud de viaje creado correctamente',

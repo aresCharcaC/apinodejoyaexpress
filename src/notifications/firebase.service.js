@@ -27,8 +27,7 @@ class FirebaseService {
         this.initialized = true;
         console.log('✅ Firebase Admin inicializado correctamente');
       } else {
-        console.warn('⚠️ Firebase no configurado, usando modo mock');
-        this.initialized = false;
+        throw new Error('Firebase no configurado. Se requiere FIREBASE_SERVICE_ACCOUNT en variables de entorno.');
       }
     } catch (error) {
       console.error('❌ Error inicializando Firebase:', error.message);
@@ -44,7 +43,7 @@ class FirebaseService {
       console.log(`📱 Enviando push a usuario ${userId}: ${notification.title}`);
 
       if (!this.initialized) {
-        return this.sendMockNotification('usuario', userId, notification);
+        throw new Error('Firebase no está inicializado correctamente');
       }
 
       // Obtener token FCM del usuario
@@ -123,7 +122,7 @@ class FirebaseService {
       console.log(`📱 Enviando push a conductor ${conductorId}: ${notification.title}`);
 
       if (!this.initialized) {
-        return this.sendMockNotification('conductor', conductorId, notification);
+        throw new Error('Firebase no está inicializado correctamente');
       }
 
       // Obtener token FCM del conductor
@@ -292,24 +291,6 @@ class FirebaseService {
     }
   }
 
-  /**
-   * ✅ MODO MOCK (para desarrollo)
-   */
-  sendMockNotification(userType, userId, notification) {
-    console.log(`🧪 MOCK PUSH NOTIFICATION:`);
-    console.log(`   Tipo: ${userType}`);
-    console.log(`   Usuario: ${userId}`);
-    console.log(`   Título: ${notification.title}`);
-    console.log(`   Cuerpo: ${notification.body}`);
-    console.log(`   Data:`, notification.data);
-
-    return {
-      success: true,
-      mock: true,
-      userId: userId,
-      userType: userType
-    };
-  }
 
   /**
    * ✅ VERIFICAR ESTADO DEL SERVICIO

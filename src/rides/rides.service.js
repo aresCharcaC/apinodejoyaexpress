@@ -12,7 +12,7 @@ class RidesService{
     constructor(){
         this.TIMEOUT_SECONDS = 300; // tiempo limite para recivir ofertas
         this.MAX_OFFERS = 6; // cantidad de ofertas
-        this.SEARCH_RADIUS =  2; // Distancia del radio de busqueda en kmj
+        this.SEARCH_RADIUS =  20; // Distancia del radio de busqueda en kmj
     }
   /**
    *  CREAR SOLICITUD DE VIAJE 
@@ -34,19 +34,93 @@ class RidesService{
         //  verifificamos qeu el usuario no tenga viajes activos
         await this.checkUserActiveRides(userId);
 
-        // luego buscamos conductores cercanos
+        // luego buscamos conductores cercanos AL PUNTO DE RECOGIDA
         const nearbyDrivers = await locationService.findNearbyDrivers(
-            rideData.origen_lat,
-            rideData.origen_lng,
-            this.SEARCH_RADIUS // en rango x
+            rideData.origen_lat,    // ✅ Coordenadas del punto de recogida
+            rideData.origen_lng,    // ✅ Coordenadas del punto de recogida  
+            this.SEARCH_RADIUS      // en rango x km
         );
-        if (nearbyDrivers.length === 0){
-            throw new ValidationError("❌ NO hay conductores cercanos disponibles en tu zona"); 
-        }
         
-        // guardamos el vieje en la BD
+        // guardamos el viaje en la BD primero
         const viaje = await this.createViaje(userId, rideData, distanceKm);
 
+        // ⚠️ CASO ESPECIAL: No hay conductores cerca del punto de recogida
+        if (nearbyDrivers.length === 0){
+            console.log(`⚠️ No hay conductores disponibles cerca del punto de recogida para viaje ${viaje.id}`);
+            console.log(`📍 Punto de recogida: ${rideData.origen_lat}, ${rideData.origen_lng}`);
+            
+            // Cancelamos el viaje inmediatamente
+            await viaje.update({
+                estado: 'cancelado',
+                motivo_cancelacion: 'No hay conductores disponibles cerca del punto de recogida',
+                cancelado_por: 'sistema_no_drivers',  // ✅ Reducido a menos de 50 caracteres
+                fecha_cancelacion: new Date()
+            });
+
+            // Notificamos al usuario via WebSocket sobre la situación
+            websocketServer.notifyUser(userId, 'ride:no_drivers_available', {
+                viaje_id: viaje.id,
+                mensaje: 'No hay conductores disponibles cerca de tu punto de recogida en este momento',
+                punto_recogida: {
+                    lat: rideData.origen_lat,
+                    lng: rideData.origen_lng,
+                    direccion: rideData.origen_direccion
+                },
+                sugerencias: [
+                    'Intenta aumentar el precio sugerido para atraer más conductores',
+                    'Espera unos minutos e intenta nuevamente',
+                    'Verifica que el punto de recogida sea accesible'
+                ],
+                estado: 'cancelado',
+                radio_busqueda_km: this.SEARCH_RADIUS,
+                puede_reintentar: true
+            });
+
+            // Push notification
+            try {
+                await firebaseService.sendToUser(userId, {
+                    title: '😔 No hay conductores disponibles',
+                    body: 'No encontramos conductores cerca de tu punto de recogida',
+                    data: {
+                        type: 'no_drivers_available',
+                        viaje_id: viaje.id
+                    }
+                });
+            } catch (pushError) {
+                console.warn('⚠️ Error enviando push notification:', pushError.message);
+            }
+
+            return {
+                success: false,
+                viaje: {
+                    id: viaje.id,
+                    estado: 'cancelado',
+                    origen: {
+                        lat: viaje.origen_lat,
+                        lng: viaje.origen_lng,
+                        direccion: viaje.origen_direccion
+                    },
+                    destino: {
+                        lat: viaje.destino_lat,
+                        lng: viaje.destino_lng,
+                        direccion: viaje.destino_direccion
+                    },
+                    distancia_km: viaje.distancia_km,
+                    precio_sugerido: viaje.precio_sugerido,
+                    fecha_solicitud: viaje.fecha_solicitud,
+                    fecha_cancelacion: new Date(),
+                    motivo_cancelacion: 'No hay conductores disponibles cerca del punto de recogida'
+                },
+                conductores_notificados: 0,
+                mensaje: 'No hay conductores disponibles cerca de tu punto de recogida. Puedes intentar nuevamente.',
+                radio_busqueda_km: this.SEARCH_RADIUS,
+                puede_reintentar: true
+            };
+        }
+
+        // ✅ Si hay conductores cerca del punto de recogida, procedemos normalmente
+        console.log(`✅ Encontrados ${nearbyDrivers.length} conductores cerca del punto de recogida`);
+        
         // notificamos a todos los conductores cercanos
         const notificationResult = await this.notifyNearbyDrivers(nearbyDrivers, viaje);
 
@@ -74,7 +148,7 @@ class RidesService{
             },
             conductores_notificados: notificationResult.notifiedCount,
             timeout_segundos: this.TIMEOUT_SECONDS
-        }; 
+        };
     } catch (error) {
         console.error('❌ Error creando solicitud de viaje:', error.message);
       throw error;
@@ -722,10 +796,48 @@ async checkUserActiveRides(userId){
             where: {
                 usuario_id: userId,
                 estado: ['solicitado', 'ofertas_recibidas', 'aceptado', 'en_curso']
-            }
+            },
+            order: [['fecha_solicitud', 'DESC']]
         });
+        
         if (activeRide){
-            throw new ConflictError('Ya tiene un viaje activo. Puedes completar o cancelar el viaje actual');
+            console.log(`🚨 VIAJE ACTIVO ENCONTRADO para usuario ${userId}:`);
+            console.log(`   - ID: ${activeRide.id}`);
+            console.log(`   - Estado: ${activeRide.estado}`);
+            console.log(`   - Fecha solicitud: ${activeRide.fecha_solicitud}`);
+            console.log(`   - Origen: ${activeRide.origen_direccion || `${activeRide.origen_lat}, ${activeRide.origen_lng}`}`);
+            console.log(`   - Destino: ${activeRide.destino_direccion || `${activeRide.destino_lat}, ${activeRide.destino_lng}`}`);
+            
+            // Si el viaje está en estado 'solicitado' por más de 10 minutos, lo cancelamos automáticamente
+            const tiempoTranscurrido = new Date() - new Date(activeRide.fecha_solicitud);
+            const minutosTranscurridos = Math.floor(tiempoTranscurrido / (1000 * 60));
+            
+            if (activeRide.estado === 'solicitado' && minutosTranscurridos > 10) {
+                console.log(`⏰ Auto-cancelando viaje ${activeRide.id} - ${minutosTranscurridos} minutos sin respuesta`);
+                
+                await activeRide.update({
+                    estado: 'cancelado',
+                    motivo_cancelacion: `Auto-cancelado por timeout - ${minutosTranscurridos} minutos sin ofertas`,
+                    cancelado_por: 'sistema_timeout_auto',
+                    fecha_cancelacion: new Date()
+                });
+                
+                // Notificar al usuario
+                try {
+                    websocketServer.notifyUser(userId, 'ride:auto_cancelled', {
+                        viaje_id: activeRide.id,
+                        motivo: 'Viaje cancelado automáticamente por inactividad',
+                        minutos_transcurridos: minutosTranscurridos
+                    });
+                } catch (notificationError) {
+                    console.warn('⚠️ Error enviando notificación de auto-cancelación:', notificationError.message);
+                }
+                
+                console.log(`✅ Viaje ${activeRide.id} auto-cancelado, usuario puede crear nuevo viaje`);
+                return; // Permitir crear nuevo viaje
+            }
+            
+            throw new ConflictError(`Ya tiene un viaje activo (${activeRide.estado}). ID: ${activeRide.id}. Puedes completar o cancelar el viaje actual`);
         }
 }
      // calculadno la tarifaac base referencial
@@ -1182,7 +1294,7 @@ calculateArrivalTime(conductorLat, conductorLng, origenLat, origenLng){
             const activaRides = await Viaje.findAll({
                 where: {
                     usuario_id: userId,
-                    estado: ['solicitado', 'oferta_recividass', 'aceptado', 'en_curso']
+                    estado: ['solicitado', 'ofertas_recibidas', 'aceptado', 'en_curso']
                 },
                 include: [
                     {

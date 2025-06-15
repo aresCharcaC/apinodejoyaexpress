@@ -95,7 +95,7 @@ module.exports = (sequelize, DataTypes) => {
     fecha_finalizacion: DataTypes.DATE,
     fecha_cancelacion: DataTypes.DATE,
     motivo_cancelacion: DataTypes.TEXT,      // ← TEXT, no STRING
-    cancelado_por: DataTypes.STRING(20)
+    cancelado_por: DataTypes.STRING(50)  // Aumentar límite para evitar truncamiento
   }, {
     sequelize,
     modelName: 'Viaje',
